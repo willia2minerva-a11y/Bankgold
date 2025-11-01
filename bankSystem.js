@@ -1,5 +1,7 @@
 const Database = require('./database');
 const config = require('./config');
+const archiveA = require('./archives/archiveA');
+const archiveB = require('./archives/archiveB');
 
 class BankSystem {
   constructor() {
@@ -10,181 +12,331 @@ class BankSystem {
 
   getNextCode() {
     this.currentNumber += 1;
-
+    
     if (this.currentNumber > 999) {
       this.currentNumber = 1;
       this.currentLetter = 'C';
     }
-
+    
     return `${this.currentLetter}${this.currentNumber.toString().padStart(3, '0')}${this.currentLetter}`;
   }
 
-  async processAdminCommand(adminId, command) {
-    if (adminId !== config.adminUserId) {
-      return "❌ غير مصرح لك";
-    }
-
-    command = command.trim();
-
-    // نمط: خصم 10000G للكود A610A السبب اشترى 10 بطاقات نجم الغولد
-    const deductMatch = command.match(/خصم\s+(\d+)G\s+للکود\s+(\w+)\s+السبب\s+(.+)/);
-    if (deductMatch) {
-      const amount = this.parseAmount(deductMatch[1]);
-      const code = deductMatch[2].toUpperCase();
-      const reason = deductMatch[3];
-      
-      const [success, response] = await this.adminDeductBalance(adminId, code, amount, reason);
-      
-      if (success) {
-        const archiveInfo = this.getArchiveByCode(code);
-        const archiveText = await this.getArchive(archiveInfo.number, archiveInfo.series);
-        return response + "\n\n" + archiveText;
+  async processCommand(userId, message) {
+    const command = message.trim().toLowerCase();
+    
+    try {
+      if (command.startsWith('انشاء')) {
+        return await this.handleCreate(userId, command);
       }
-      return response;
-    }
-
-    // نمط: اضافة 5000G للكود B700B السبب مكافأة
-    const addMatch = command.match(/اضافة\s+(\d+)G\s+للکود\s+(\w+)\s+السبب\s+(.+)/);
-    if (addMatch) {
-      const amount = this.parseAmount(addMatch[1]);
-      const code = addMatch[2].toUpperCase();
-      const reason = addMatch[3];
-      
-      const [success, response] = await this.adminAddBalance(adminId, code, amount, reason);
-      
-      if (success) {
-        const archiveInfo = this.getArchiveByCode(code);
-        const archiveText = await this.getArchive(archiveInfo.number, archiveInfo.series);
-        return response + "\n\n" + archiveText;
+      else if (command.startsWith('تحويل')) {
+        return await this.handleTransfer(userId, command);
       }
-      return response;
-    }
-
-    // نمط: انشاء كيم شيريونغ
-    const createMatch = command.match(/انشاء\s+(.+)/);
-    if (createMatch) {
-      const username = createMatch[1].trim();
-      const [success, response] = await this.createAccount(null, username);
-      
-      if (success) {
-        return `✅ ${response.message}\n\n📋 ${JSON.stringify(response.card.data, null, 2)}`;
+      else if (command.startsWith('حظر')) {
+        return await this.handleBan(userId, command);
       }
-      return response;
+      else if (command === 'مجموع') {
+        return await this.handleTotal(userId);
+      }
+      else if (command.startsWith('ارشيف')) {
+        return await this.handleArchive(command);
+      }
+      else if (command.startsWith('خصم')) {
+        return await this.handleDeduct(userId, command);
+      }
+      else if (command.startsWith('رصيد')) {
+        return await this.handleBalance(command);
+      }
+      else if (command === 'معرفي') {
+        return await this.handleGetId(userId);
+      }
+      else if (command === 'مساعدة' || command === 'اوامر') {
+        return await this.handleHelp(userId);
+      }
+      else {
+        return this.getUnknownCommandResponse(command);
+      }
+      
+    } catch (error) {
+      return `❌ حدث خطأ: ${error.message}`;
     }
-
-    // نمط: ارشيف 5
-    const archiveMatch = command.match(/ارشيف\s+(\d+)/);
-    if (archiveMatch) {
-      const archiveNum = parseInt(archiveMatch[1]);
-      return await this.getArchive(archiveNum, 'A');
-    }
-
-    // نمط: ارشيف ب 2
-    const archiveSeriesMatch = command.match(/ارشيف\s+(\w)\s+(\d+)/);
-    if (archiveSeriesMatch) {
-      const series = archiveSeriesMatch[1].toUpperCase();
-      const archiveNum = parseInt(archiveSeriesMatch[2]);
-      return await this.getArchive(archiveNum, series);
-    }
-
-    // نمط: بحث كيم
-    const searchMatch = command.match(/بحث\s+(.+)/);
-    if (searchMatch) {
-      const searchTerm = searchMatch[1];
-      return await this.searchAccounts(searchTerm);
-    }
-
-    return `❌ أمر غير معروف. الأوامر المتاحة:
-
-💰 **العمليات المالية:**
-• خصم [مبلغ]G للكود [الكود] السبب [السبب]
-• اضافة [مبلغ]G للكود [الكود] السبب [السبب]
-
-👤 **إدارة الحسابات:**
-• انشاء [الاسم]
-
-📊 **الاستعلامات:**
-• ارشيف [رقم] - للأرشيفات A
-• ارشيف [السلسلة] [رقم] - لأي سلسلة
-• بحث [اسم أو كود]
-
-مثال:
-خصم 10000G للكود A610A السبب اشترى 10 بطاقات نجم الغولد
-انشاء كيم شيريونغ
-ارشيف 5
-ارشيف ب 2
-بحث كيم`;
   }
 
-  async getArchive(archiveNumber, series = 'A') {
-    const startNum = (archiveNumber - 1) * config.archiveSize;
-    const endNum = startNum + config.archiveSize - 1;
+  async handleCreate(userId, command) {
+    const parts = command.split(' ');
+    if (parts.length < 2) {
+      return `❌ صيغة خاطئة! استخدم:\nانشاء [الاسم الكامل]\nمثال: انشاء كيم شيريونغ`;
+    }
+    
+    const username = parts.slice(1).join(' ').trim();
+    if (!username) {
+      return `❌ يرجى إدخال اسم صحيح`;
+    }
+    
+    const [success, response] = await this.createAccount(userId, username);
+    
+    if (success) {
+      return `✅ تم إنشاء الحساب بنجاح!\n\n📋 معلومات الحساب:\nالكود: ${response.account.code}\nالاسم: ${response.account.username}\nالرصيد: ${response.account.balance} ${config.currency}\n\n💳 تم إضافة البطاقة إلى الأرشيف`;
+    } else {
+      return response;
+    }
+  }
+
+  async handleTransfer(userId, command) {
+    const match = command.match(/تحويل\s+(\d+)g?\s+لـ?\s*(\w+)/i);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nتحويل [المبلغ] [كود المستلم]\nمثال: تحويل 100 B700B`;
+    }
+    
+    const amount = parseFloat(match[1]);
+    const toCode = match[2].toUpperCase();
+    
+    if (amount <= 0) {
+      return `❌ المبلغ يجب أن يكون أكبر من الصفر`;
+    }
+    
+    const [success, response] = await this.transferMoney(userId, toCode, amount);
+    return response;
+  }
+
+  async handleBan(userId, command) {
+    if (userId !== config.adminUserId) {
+      return `❌ هذا الأمر للمشرف فقط`;
+    }
+    
+    const match = command.match(/حظر\s+(\w+)/i);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nحظر [الكود]\nمثال: حظر A100A`;
+    }
+    
+    const code = match[1].toUpperCase();
+    const [success, response] = await this.banAccount(userId, code);
+    return response;
+  }
+
+  async handleTotal(userId) {
+    if (userId !== config.adminUserId) {
+      return `❌ هذا الأمر للمشرف فقط`;
+    }
     
     const accounts = await this.db.getAllAccounts();
-    const archiveAccounts = accounts.filter(acc => {
-      if (!acc.code || acc.code[0] !== series) return false;
-      const accNumber = parseInt(acc.code.slice(1, 4));
-      return accNumber >= startNum && accNumber <= endNum;
-    });
-
-    return this.formatArchiveDisplay(archiveAccounts, archiveNumber, series);
-  }
-
-  formatArchiveDisplay(accounts, archiveNumber, series) {
-    if (accounts.length === 0) {
-      return `📁 الأرشيف ${archiveNumber} (السلسلة ${series}):\nلا توجد حسابات في هذا الأرشيف`;
-    }
-
-    let text = `📁 الأرشيف ${archiveNumber} (السلسلة ${series}):\n\n`;
-    let totalBalance = 0;
+    let totalGold = 0;
+    let activeAccounts = 0;
     
     accounts.forEach(account => {
+      totalGold += account.balance;
+      if (account.balance > 0) activeAccounts++;
+    });
+    
+    return `💰 إحصائيات النظام:\n\n• إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}\n• عدد الحسابات: ${accounts.length.toLocaleString()}\n• الحسابات النشطة: ${activeAccounts.toLocaleString()}\n• متوسط الرصيد: ${Math.round(totalGold / accounts.length)} ${config.currency}`;
+  }
+
+  async handleArchive(command) {
+    const match = command.match(/ارشيف\s+(\w)(\d+)/i);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nارشيف [الحرف][الرقم]\nمثال: ارشيف A1\nمثال: ارشيف B2`;
+    }
+    
+    const series = match[1].toUpperCase();
+    const archiveNum = match[2];
+    const archiveKey = series + archiveNum;
+    
+    let archiveData;
+    if (series === 'A') {
+      archiveData = archiveA[archiveKey];
+    } else if (series === 'B') {
+      archiveData = archiveB[archiveKey];
+    } else {
+      return `❌ الأرشيف غير موجود. السلاسل المتاحة: A, B`;
+    }
+    
+    if (!archiveData) {
+      return `❌ الأرشيف ${archiveKey} غير موجود`;
+    }
+    
+    return this.formatArchiveDisplay(archiveData);
+  }
+
+  async handleDeduct(userId, command) {
+    if (userId !== config.adminUserId) {
+      return `❌ هذا الأمر للمشرف فقط`;
+    }
+    
+    const match = command.match(/خصم\s+(\d+)g?\s+لـ?\s*(\w+)\s+السبب\s+(.+)/i);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nخصم [المبلغ] [الكود] السبب [السبب]\nمثال: خصم 10000 A610A السبب اشترى 10 بطاقات نجم الغولد`;
+    }
+    
+    const amount = parseFloat(match[1]);
+    const code = match[2].toUpperCase();
+    const reason = match[3];
+    
+    const [success, response] = await this.adminDeductBalance(userId, code, amount, reason);
+    return response;
+  }
+
+  async handleBalance(command) {
+    const match = command.match(/رصيد\s+(\w+)/i);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nرصيد [كود الحساب]\nمثال: رصيد A100A\nمثال: رصيد B700B`;
+    }
+    
+    const code = match[1].toUpperCase();
+    const account = await this.db.getAccountByCode(code);
+    
+    if (!account) {
+      return `❌ الحساب ${code} غير موجود`;
+    }
+    
+    return `💰 رصيد الحساب:\n\nالكود: ${account.code}\nالاسم: ${account.username}\nالرصيد: ${account.balance} ${config.currency}\nالحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
+  }
+
+  async handleGetId(userId) {
+    return `🆔 معرفك هو: ${userId}`;
+  }
+
+  async handleHelp(userId) {
+    const isAdmin = userId === config.adminUserId;
+    
+    let helpText = `🏦 **أوامر بنك GOLD - المساعدة**\n\n`;
+    
+    helpText += `👤 **أوامر المستخدم:**\n`;
+    helpText += `• \`انشاء [الاسم]\` - إنشاء حساب جديد\n`;
+    helpText += `• \`تحويل [المبلغ] [الكود]\` - تحويل غولد\n`;
+    helpText += `• \`رصيد [الكود]\` - استعلام عن رصيد حساب\n`;
+    helpText += `• \`معرفي\` - عرض معرفك\n`;
+    helpText += `• \`مساعدة\` - عرض هذه الرسالة\n\n`;
+    
+    helpText += `📊 **أوامر الأرشيف:**\n`;
+    helpText += `• \`ارشيف A1\` - الأرشيف الأول من A (A000A-A099A)\n`;
+    helpText += `• \`ارشيف A2\` - الأرشيف الثاني من A (A100A-A199A)\n`;
+    helpText += `• \`ارشيف B1\` - الأرشيف الأول من B (B000B-B099B)\n`;
+    helpText += `• \`ارشيف B2\` - الأرشيف الثاني من B (B100B-B199B)\n`;
+    helpText += `• ... حتى A10 و B8\n\n`;
+    
+    if (isAdmin) {
+      helpText += `⚡ **أوامر المشرف:**\n`;
+      helpText += `• \`حظر [الكود]\` - حظر حساب\n`;
+      helpText += `• \`مجموع\` - إجمالي الغولد\n`;
+      helpText += `• \`خصم [المبلغ] [الكود] السبب [السبب]\` - خصم غولد\n\n`;
+    }
+    
+    helpText += `📋 **معلومات النظام:**\n`;
+    helpText += `• الرصيد الابتدائي: 15 ${config.currency}\n`;
+    helpText += `• السلسلة الحالية: ${this.currentLetter}\n`;
+    helpText += `• التالي: ${this.getNextCode()}\n`;
+    helpText += `• إجمالي الحسابات: 1,771 حساب`;
+    
+    return helpText;
+  }
+
+  getUnknownCommandResponse(command) {
+    return `❌ الأمر "${command}" غير معروف!\n\n🔍 اكتب \`مساعدة\` لعرض جميع الأوامر المتاحة.\n\n💡 تلميح: تأكد من كتابة الأمر بشكل صحيح.`;
+  }
+
+  formatArchiveDisplay(archiveData) {
+    let text = `📁 ${archiveData.name}\n`;
+    text += `📍 من ${archiveData.start} إلى ${archiveData.end}\n\n`;
+    
+    let totalBalance = 0;
+    let accountCount = 0;
+    
+    archiveData.accounts.forEach(account => {
       text += `${account.code} ${account.username}\n${account.balance} ${config.currency}\n\n`;
       totalBalance += account.balance;
+      accountCount++;
     });
     
     text += `--- الإحصاءات ---\n`;
-    text += `إجمالي الحسابات: ${accounts.length}\n`;
-    text += `إجمالي الأرصدة: ${totalBalance} ${config.currency}\n`;
-    text += `متوسط الرصيد: ${Math.round(totalBalance / accounts.length)} ${config.currency}`;
+    text += `• عدد الحسابات: ${accountCount}\n`;
+    text += `• إجمالي الغولد: ${totalBalance} ${config.currency}\n`;
+    text += `• متوسط الرصيد: ${Math.round(totalBalance / accountCount)} ${config.currency}`;
     
     return text;
   }
 
-  getArchiveByCode(code) {
-    const series = code[0];
-    const number = parseInt(code.slice(1, 4));
-    const archiveNumber = Math.floor(number / config.archiveSize) + 1;
+  async createAccount(userId, username, customCode = null) {
+    let code = customCode || this.getNextCode();
     
-    return {
-      series: series,
-      number: archiveNumber
-    };
+    try {
+      await this.db.createAccount(userId, code, username, config.initialBalance);
+      
+      return [true, {
+        message: "تم الإنشاء بنجاح",
+        account: { code, username, balance: config.initialBalance }
+      }];
+    } catch (error) {
+      return [false, `❌ فشل في إنشاء الحساب: ${error.message}`];
+    }
   }
 
-  parseAmount(amountStr) {
-    return parseFloat(amountStr.replace(/\s/g, ''));
+  async transferMoney(fromUser, toCode, amount) {
+    if (amount <= 0) {
+      return [false, "❌ المبلغ يجب أن يكون موجباً"];
+    }
+    
+    const fromBalance = await this.db.getBalance(fromUser);
+    if (fromBalance < amount) {
+      return [false, "❌ رصيد غير كافٍ"];
+    }
+    
+    const toAccount = await this.db.getAccountByCode(toCode);
+    if (!toAccount) {
+      return [false, "❌ الحساب المستلم غير موجود"];
+    }
+    
+    if (toAccount.status !== 'active') {
+      return [false, "❌ لا يمكن التحويل لحساب محظور"];
+    }
+    
+    try {
+      await this.db.transferMoney(fromUser, toAccount.user_id, toCode, amount);
+      const newBalance = fromBalance - amount;
+      
+      return [true, `✅ تم التحويل بنجاح!\nالمبلغ: ${amount} ${config.currency}\nإلى: ${toCode}\nرصيدك الجديد: ${newBalance} ${config.currency}`];
+    } catch (error) {
+      return [false, "❌ فشل في التحويل"];
+    }
+  }
+
+  async banAccount(adminId, code) {
+    if (adminId !== config.adminUserId) {
+      return [false, "غير مصرح لك"];
+    }
+    
+    const account = await this.db.getAccountByCode(code);
+    if (!account) {
+      return [false, "❌ الحساب غير موجود"];
+    }
+    
+    try {
+      await this.db.updateAccountStatus(account.user_id, 'banned');
+      config.blacklistedAccounts.push(code);
+      
+      return [true, `✅ تم حظر الحساب ${code}`];
+    } catch (error) {
+      return [false, "❌ فشل في حظر الحساب"];
+    }
   }
 
   async adminDeductBalance(adminId, code, amount, reason = '') {
     if (adminId !== config.adminUserId) {
       return [false, "غير مصرح لك"];
     }
-
+    
     const account = await this.db.getAccountByCode(code);
     if (!account) {
       return [false, "❌ الحساب غير موجود"];
     }
-
+    
     if (config.blacklistedAccounts.includes(code)) {
       return [false, "❌ لا يمكن تعديل حساب محظور"];
     }
-
+    
     const currentBalance = account.balance;
     if (currentBalance < amount) {
       return [false, "❌ الرصيد غير كاف للخصم"];
     }
-
+    
     const newBalance = currentBalance - amount;
     try {
       await this.db.updateBalance(account.user_id, newBalance);
@@ -194,114 +346,6 @@ class BankSystem {
     } catch (error) {
       return [false, "❌ فشل في الخصم"];
     }
-  }
-
-  async adminAddBalance(adminId, code, amount, reason = '') {
-    if (adminId !== config.adminUserId) {
-      return [false, "غير مصرح لك"];
-    }
-
-    const account = await this.db.getAccountByCode(code);
-    if (!account) {
-      return [false, "❌ الحساب غير موجود"];
-    }
-
-    if (config.blacklistedAccounts.includes(code)) {
-      return [false, "❌ لا يمكن تعديل حساب محظور"];
-    }
-
-    const currentBalance = account.balance;
-    const newBalance = currentBalance + amount;
-    
-    try {
-      await this.db.updateBalance(account.user_id, newBalance);
-      await this.db.logOperation('add', amount, null, code, reason, adminId);
-      
-      return [true, `✅ تم الإضافة بنجاح!\nالحساب: ${code}\nالمبلغ: ${amount} ${config.currency}\nالسبب: ${reason}\nالرصيد الجديد: ${newBalance} ${config.currency}`];
-    } catch (error) {
-      return [false, "❌ فشل في الإضافة"];
-    }
-  }
-
-  async createAccount(userId, username, customCode = null) {
-    let code;
-    if (customCode) {
-      code = customCode.toUpperCase();
-      // التحقق من أن الكود غير مستخدم
-      const existing = await this.db.getAccountByCode(code);
-      if (existing) {
-        return [false, "❌ الكود مستخدم مسبقاً"];
-      }
-    } else {
-      code = this.getNextCode();
-    }
-
-    try {
-      await this.db.createAccount(userId, code, username, config.initialBalance);
-      
-      const cardData = this.generateCreateCard(code, username);
-      
-      return [true, {
-        message: `✅ تم إنشاء الحساب بنجاح!`,
-        card: cardData,
-        account: { code, username, balance: config.initialBalance }
-      }];
-    } catch (error) {
-      return [false, "❌ فشل في إنشاء الحساب: " + error.message];
-    }
-  }
-
-  async searchAccounts(searchTerm) {
-    const accounts = await this.db.getAllAccounts();
-    const results = accounts.filter(account => 
-      account.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      account.username.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-
-    if (results.length === 0) {
-      return `🔍 لا توجد نتائج للبحث عن: "${searchTerm}"`;
-    }
-
-    let text = `🔍 نتائج البحث عن "${searchTerm}":\n\n`;
-    results.forEach(account => {
-      text += `${account.code} ${account.username}\n${account.balance} ${config.currency}\n\n`;
-    });
-
-    text += `--- العدد الإجمالي: ${results.length} ---`;
-    return text;
-  }
-
-  generateCreateCard(code, username) {
-    const currentDate = new Date().toLocaleDateString('ar-EG');
-    const archiveLetter = code[0];
-    
-    return {
-      type: 'create_card',
-      template: 'FB_IMG_17620077890456013.jpg',
-      data: {
-        bank_name: "GOLD BANK",
-        code: code,
-        date: currentDate,
-        archive: archiveLetter,
-        username: username,
-        balance: config.initialBalance + ' ' + config.currency
-      }
-    };
-  }
-
-  // إحصائيات النظام
-  async getSystemStats() {
-    const accounts = await this.db.getAllAccounts();
-    const totalAccounts = accounts.length;
-    const totalBalance = accounts.reduce((sum, acc) => sum + acc.balance, 0);
-    const activeAccounts = accounts.filter(acc => acc.balance > 0).length;
-    
-    return {
-      totalAccounts,
-      totalBalance,
-      activeAccounts,
-      averageBalance: totalBalance / totalAccounts
-    };
   }
 }
 
