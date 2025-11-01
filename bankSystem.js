@@ -150,7 +150,8 @@ class BankSystem {
     }
     
     if (!archiveData) {
-      return `❌ الأرشيف ${archiveKey} غير موجود`;
+      const availableArchives = this.getAvailableArchives(series);
+      return `❌ الأرشيف ${archiveKey} غير موجود\n\n📂 الأرشيفات المتاحة:\n${availableArchives}`;
     }
     
     return this.formatArchiveDisplay(archiveData);
@@ -181,6 +182,14 @@ class BankSystem {
     }
     
     const code = match[1].toUpperCase();
+    
+    // البحث في الأرشيفات أولاً
+    const archiveResult = this.searchInArchives(code);
+    if (archiveResult) {
+      return archiveResult;
+    }
+    
+    // إذا لم يوجد في الأرشيفات، البحث في قاعدة البيانات
     const account = await this.db.getAccountByCode(code);
     
     if (!account) {
@@ -188,6 +197,29 @@ class BankSystem {
     }
     
     return `💰 رصيد الحساب:\n\nالكود: ${account.code}\nالاسم: ${account.username}\nالرصيد: ${account.balance} ${config.currency}\nالحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
+  }
+
+  searchInArchives(code) {
+    const series = code[0].toUpperCase();
+    const number = parseInt(code.slice(1, 4));
+    const archiveNum = Math.floor(number / 100) + 1;
+    const archiveKey = series + archiveNum;
+    
+    let archiveData;
+    if (series === 'A') {
+      archiveData = archiveA[archiveKey];
+    } else if (series === 'B') {
+      archiveData = archiveB[archiveKey];
+    } else {
+      return null;
+    }
+    
+    if (!archiveData) return null;
+    
+    const account = archiveData.accounts.find(acc => acc.code === code);
+    if (!account) return null;
+    
+    return `💰 رصيد الحساب:\n\nالكود: ${account.code}\nالاسم: ${account.username}\nالرصيد: ${account.balance} ${config.currency}\nالمصدر: الأرشيف ${archiveKey}`;
   }
 
   async handleGetId(userId) {
@@ -209,9 +241,23 @@ class BankSystem {
     helpText += `📊 **أوامر الأرشيف:**\n`;
     helpText += `• \`ارشيف A1\` - الأرشيف الأول من A (A000A-A099A)\n`;
     helpText += `• \`ارشيف A2\` - الأرشيف الثاني من A (A100A-A199A)\n`;
+    helpText += `• \`ارشيف A3\` - الأرشيف الثالث من A (A200A-A299A)\n`;
+    helpText += `• \`ارشيف A4\` - الأرشيف الرابع من A (A300A-A399A)\n`;
+    helpText += `• \`ارشيف A5\` - الأرشيف الخامس من A (A400A-A499A)\n`;
+    helpText += `• \`ارشيف A6\` - الأرشيف السادس من A (A500A-A599A)\n`;
+    helpText += `• \`ارشيف A7\` - الأرشيف السابع من A (A600A-A699A)\n`;
+    helpText += `• \`ارشيف A8\` - الأرشيف الثامن من A (A700A-A799A)\n`;
+    helpText += `• \`ارشيف A9\` - الأرشيف التاسع من A (A800A-A899A)\n`;
+    helpText += `• \`ارشيف A10\` - الأرشيف العاشر من A (A900A-A999A)\n\n`;
+    
     helpText += `• \`ارشيف B1\` - الأرشيف الأول من B (B000B-B099B)\n`;
     helpText += `• \`ارشيف B2\` - الأرشيف الثاني من B (B100B-B199B)\n`;
-    helpText += `• ... حتى A10 و B8\n\n`;
+    helpText += `• \`ارشيف B3\` - الأرشيف الثالث من B (B200B-B299B)\n`;
+    helpText += `• \`ارشيف B4\` - الأرشيف الرابع من B (B300B-B399B)\n`;
+    helpText += `• \`ارشيف B5\` - الأرشيف الخامس من B (B400B-B499B)\n`;
+    helpText += `• \`ارشيف B6\` - الأرشيف السادس من B (B500B-B599B)\n`;
+    helpText += `• \`ارشيف B7\` - الأرشيف السابع من B (B600B-B699B)\n`;
+    helpText += `• \`ارشيف B8\` - الأرشيف الثامن من B (B700B-B771B)\n\n`;
     
     if (isAdmin) {
       helpText += `⚡ **أوامر المشرف:**\n`;
@@ -224,9 +270,20 @@ class BankSystem {
     helpText += `• الرصيد الابتدائي: 15 ${config.currency}\n`;
     helpText += `• السلسلة الحالية: ${this.currentLetter}\n`;
     helpText += `• التالي: ${this.getNextCode()}\n`;
-    helpText += `• إجمالي الحسابات: 1,771 حساب`;
+    helpText += `• إجمالي الحسابات: 1,771 حساب\n`;
+    helpText += `• الأرشيفات: 10 لـA و 8 لـB`;
     
     return helpText;
+  }
+
+  getAvailableArchives(series) {
+    let archives = [];
+    if (series === 'A') {
+      archives = Object.keys(archiveA).map(key => `• ${key}: ${archiveA[key].start} - ${archiveA[key].end}`);
+    } else if (series === 'B') {
+      archives = Object.keys(archiveB).map(key => `• ${key}: ${archiveB[key].start} - ${archiveB[key].end}`);
+    }
+    return archives.join('\n');
   }
 
   getUnknownCommandResponse(command) {
