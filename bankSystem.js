@@ -2,12 +2,14 @@ const Database = require('./database');
 const config = require('./config');
 const archiveA = require('./archives/archiveA');
 const archiveB = require('./archives/archiveB');
+const { hashPassword, verifyPassword, generateUserCode } = require('./utils/security');
 
 class BankSystem {
   constructor() {
     this.db = new Database();
     this.currentLetter = config.currentLetter;
     this.currentNumber = config.currentNumber;
+    this.loginSessions = new Map();
   }
 
   getNextCode() {
@@ -21,9 +23,34 @@ class BankSystem {
     return `${this.currentLetter}${this.currentNumber.toString().padStart(3, '0')}${this.currentLetter}`;
   }
 
+  // التحقق من حالة النظام قبل معالجة أي أمر
   async processCommand(userId, message) {
+    // التحقق من حالة البوت العامة
+    if (!config.systemSettings.botEnabled) {
+      return config.systemSettings.maintenanceMode ? 
+        config.systemSettings.maintenanceMessage : 
+        "⏸️ البوت متوقف حاليًا. الرجاء المحاولة لاحقاً.";
+    }
+
+    // التحقق من أوقات العمل
+    const timeCheck = this.checkWorkingHours();
+    if (!timeCheck.withinHours) {
+      return timeCheck.message;
+    }
+
+    // التحقق من وضع الصيانة
+    if (config.systemSettings.maintenanceMode && userId !== config.adminUserId) {
+      return config.systemSettings.maintenanceMessage;
+    }
+
     const command = message.trim().toLowerCase();
     
+    // التحقق إذا كان المستخدم مسجل الدخول
+    if (!this.loginSessions.has(userId)) {
+      return await this.handleFirstTimeUser(userId, command);
+    }
+    
+    // إذا كان مسجل الدخول، نعالج الأوامر العادية
     try {
       if (command.startsWith('انشاء')) {
         return await this.handleCreate(userId, command);
@@ -38,19 +65,43 @@ class BankSystem {
         return await this.handleTotal(userId);
       }
       else if (command.startsWith('ارشيف')) {
-        return await this.handleArchive(command);
+        return await this.handleArchive(userId, command);
       }
       else if (command.startsWith('خصم')) {
         return await this.handleDeduct(userId, command);
       }
       else if (command.startsWith('رصيد')) {
-        return await this.handleBalance(command);
+        return await this.handleBalance(userId, command);
+      }
+      else if (command.startsWith('اضافة')) {
+        return await this.handleAddBalance(userId, command);
+      }
+      else if (command.startsWith('ايقاف') || command.startsWith('تشغيل')) {
+        return await this.handleSystemControl(userId, command);
+      }
+      else if (command.startsWith('ربط')) {
+        return await this.handleLinkAccount(userId, command);
+      }
+      else if (command.startsWith('تعديل')) {
+        return await this.handleModifyBalance(userId, command);
       }
       else if (command === 'معرفي') {
         return await this.handleGetId(userId);
       }
+      else if (command === 'رصيدي') {
+        return await this.handleMyBalance(userId);
+      }
+      else if (command === 'حالتي') {
+        return await this.handleMyAccount(userId);
+      }
       else if (command === 'مساعدة' || command === 'اوامر') {
         return await this.handleHelp(userId);
+      }
+      else if (command === 'تسجيل خروج') {
+        return await this.handleLogout(userId);
+      }
+      else if (command === 'حالة النظام') {
+        return await this.handleSystemStatus(userId);
       }
       else {
         return this.getUnknownCommandResponse(command);
@@ -61,7 +112,271 @@ class BankSystem {
     }
   }
 
+  // التحقق من أوقات العمل
+  checkWorkingHours() {
+    if (!config.workingHours.enabled) {
+      return { withinHours: true, message: "" };
+    }
+
+    const now = new Date();
+    const timeString = now.toLocaleTimeString('en-US', { 
+      hour12: false, 
+      timeZone: config.workingHours.timezone 
+    }).slice(0, 5);
+
+    const currentTime = timeString;
+    const startTime = config.workingHours.startTime;
+    const endTime = config.workingHours.endTime;
+
+    if (currentTime < startTime || currentTime > endTime) {
+      return {
+        withinHours: false,
+        message: config.workingHours.offHoursMessage
+      };
+    }
+
+    return { withinHours: true, message: "" };
+  }
+
+  // معالجة المستخدم لأول مرة
+  async handleFirstTimeUser(userId, command) {
+    if (command.startsWith('تسجيل')) {
+      return await this.handleLogin(userId, command);
+    }
+    else if (command.startsWith('استعادة')) {
+      return await this.handleRecover(userId, command);
+    }
+    else if (command.startsWith('انشاء')) {
+      return await this.handleCreateWithPassword(userId, command);
+    }
+    else {
+      return this.getWelcomeMessage();
+    }
+  }
+
+  // رسالة ترحيب للمستخدمين الجدد
+  getWelcomeMessage() {
+    return `🏦 **مرحباً في بنك GOLD**\n\n` +
+           `📋 **اختر أحد الخيارات:**\n` +
+           `• \`انشاء [الاسم] [كلمة السر]\` - إنشاء حساب جديد\n` +
+           `• \`تسجيل [الكود] [كلمة السر]\` - تسجيل الدخول\n` +
+           `• \`استعادة [الكود] [كلمة السر]\` - استعادة حساب\n\n` +
+           `🔒 **لأمان حسابك، يجب استخدام كلمة سر قوية**`;
+  }
+
+  // إنشاء حساب بكلمة سر
+  async handleCreateWithPassword(userId, command) {
+    if (!config.systemSettings.createAccounts) {
+      return "⏸️ إنشاء الحسابات الجديدة متوقف حاليًا. الرجاء المحاولة لاحقاً.";
+    }
+
+    const match = command.match(/انشاء\s+([^]+)\s+(\S+)/);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nانشاء [الاسم الكامل] [كلمة السر]\nمثال: انشاء كيم شيريونغ mypassword123`;
+    }
+    
+    const username = match[1].trim();
+    const password = match[2];
+    
+    if (password.length < 4) {
+      return `❌ كلمة السر يجب أن تكون 4 أحرف على الأقل`;
+    }
+    
+    const [success, response] = await this.createAccount(userId, username, password);
+    
+    if (success) {
+      this.loginSessions.set(userId, true);
+      return `✅ تم إنشاء الحساب بنجاح!\n\n📋 معلومات الحساب:\nالكود: ${response.account.code}\nالاسم: ${response.account.username}\nالرصيد: ${response.account.balance} ${config.currency}\n\n🔒 **احفظ كودك وكلمة السر لاستعادة الحساب**`;
+    } else {
+      return response;
+    }
+  }
+
+  // تسجيل الدخول
+  async handleLogin(userId, command) {
+    const match = command.match(/تسجيل\s+(\w+)\s+(\S+)/);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nتسجيل [الكود] [كلمة السر]\nمثال: تسجيل B700B mypassword123`;
+    }
+    
+    const code = match[1].toUpperCase();
+    const password = match[2];
+    
+    const account = await this.db.getAccountByCode(code);
+    if (!account) {
+      return `❌ الكود غير صحيح!`;
+    }
+    
+    if (!verifyPassword(password, account.password)) {
+      return `❌ كلمة السر غير صحيحة!`;
+    }
+    
+    if (account.status !== 'active') {
+      return `❌ الحساب محظور!`;
+    }
+    
+    this.loginSessions.set(userId, true);
+    await this.db.updateLastLogin(account.user_id);
+    
+    return `✅ تم تسجيل الدخول بنجاح!\nمرحباً بعودتك ${account.username}\n\n💰 رصيدك: ${account.balance} ${config.currency}`;
+  }
+
+  // استعادة حساب
+  async handleRecover(userId, command) {
+    const match = command.match(/استعادة\s+(\w+)\s+(\S+)/);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nاستعادة [الكود] [كلمة السر]\nمثال: استعادة B700B mypassword123`;
+    }
+    
+    const code = match[1].toUpperCase();
+    const password = match[2];
+    
+    const account = await this.db.getAccountByCode(code);
+    if (!account) {
+      return `❌ الكود غير صحيح!`;
+    }
+    
+    if (!verifyPassword(password, account.password)) {
+      return `❌ كلمة السر غير صحيحة!`;
+    }
+    
+    // ربط الحساب القديم بالمستخدم الجديد
+    await this.db.updateUserId(account.user_id, userId);
+    this.loginSessions.set(userId, true);
+    await this.db.updateLastLogin(userId);
+    
+    return `✅ تم استعادة الحساب بنجاح!\nمرحباً بعودتك ${account.username}\n\n💰 رصيدك: ${account.balance} ${config.currency}`;
+  }
+
+  // تسجيل الخروج
+  async handleLogout(userId) {
+    this.loginSessions.delete(userId);
+    return `✅ تم تسجيل الخروج بنجاح!\n\n🔒 لاستخدام البوت مرة أخرى، اكتب:\nتسجيل [الكود] [كلمة السر]`;
+  }
+
+  // ربط حساب (للمشرف فقط)
+  async handleLinkAccount(userId, command) {
+    if (userId !== config.adminUserId) {
+      return `❌ هذا الأمر للمشرف فقط`;
+    }
+    
+    const match = command.match(/ربط\s+(\w+)\s+(\d+)\s+(\S+)/);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nربط [الكود] [المعرف] [كلمة السر]\nمثال: ربط B415B 24570538679239653 erwin1234`;
+    }
+    
+    const code = match[1].toUpperCase();
+    const targetUserId = match[2];
+    const password = match[3];
+    
+    const [success, response] = await this.linkAccount(code, targetUserId, password);
+    return response;
+  }
+
+  // تعديل الرصيد (للمشرف فقط)
+  async handleModifyBalance(userId, command) {
+    if (userId !== config.adminUserId) {
+      return `❌ هذا الأمر للمشرف فقط`;
+    }
+    
+    const match = command.match(/تعديل\s+(\w+)\s+(\d+)/);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nتعديل [الكود] [الرصيد الجديد]\nمثال: تعديل B415B 2000`;
+    }
+    
+    const code = match[1].toUpperCase();
+    const newBalance = parseFloat(match[2]);
+    
+    const [success, response] = await this.modifyBalance(code, newBalance);
+    return response;
+  }
+
+  // التحكم في النظام (للمشرف فقط)
+  async handleSystemControl(userId, command) {
+    if (userId !== config.adminUserId) {
+      return `❌ هذا الأمر للمشرف فقط`;
+    }
+
+    const parts = command.split(' ');
+    const action = parts[0];
+    const target = parts[1];
+
+    let response = "";
+
+    switch (target) {
+      case 'البوت':
+        config.systemSettings.botEnabled = (action === 'تشغيل');
+        response = `✅ تم ${action} البوت ${action === 'تشغيل' ? 'بنجاح' : 'بنجاح'}`;
+        break;
+
+      case 'الانشاء':
+        config.systemSettings.createAccounts = (action === 'تشغيل');
+        response = `✅ تم ${action} إنشاء الحسابات ${action === 'تشغيل' ? 'بنجاح' : 'بنجاح'}`;
+        break;
+
+      case 'التحويلات':
+        config.systemSettings.transfers = (action === 'تشغيل');
+        response = `✅ تم ${action} التحويلات ${action === 'تشغيل' ? 'بنجاح' : 'بنجاح'}`;
+        break;
+
+      case 'الصيانة':
+        config.systemSettings.maintenanceMode = (action === 'ايقاف');
+        response = `✅ تم ${action === 'ايقاف' ? 'تفعيل' : 'إلغاء'} وضع الصيانة`;
+        break;
+
+      case 'الاوقات':
+        config.workingHours.enabled = (action === 'تشغيل');
+        response = `✅ تم ${action} نظام أوقات العمل ${action === 'تشغيل' ? 'بنجاح' : 'بنجاح'}`;
+        break;
+
+      default:
+        response = `❌ هدف غير معروف. الأهداف المتاحة: البوت، الانشاء، التحويلات، الصيانة، الاوقات`;
+    }
+
+    await this.db.logSystemOperation('system_control', target, action, userId);
+    
+    return response;
+  }
+
+  // عرض حالة النظام
+  async handleSystemStatus(userId) {
+    const status = config.systemSettings;
+    const workingHours = config.workingHours;
+    const timeCheck = this.checkWorkingHours();
+
+    let statusText = `🏦 **حالة النظام الحالية**\n\n`;
+
+    statusText += `🔧 **إعدادات النظام:**\n`;
+    statusText += `• البوت: ${status.botEnabled ? '🟢 نشط' : '🔴 متوقف'}\n`;
+    statusText += `• إنشاء الحسابات: ${status.createAccounts ? '🟢 مفعل' : '🔴 متوقف'}\n`;
+    statusText += `• التحويلات: ${status.transfers ? '🟢 مفعلة' : '🔴 متوقفة'}\n`;
+    statusText += `• وضع الصيانة: ${status.maintenanceMode ? '🟡 مفعل' : '🔴 غير مفعل'}\n`;
+    statusText += `• أوقات العمل: ${workingHours.enabled ? '🟢 مفعلة' : '🔴 غير مفعلة'}\n\n`;
+
+    if (workingHours.enabled) {
+      statusText += `⏰ **أوقات العمل:**\n`;
+      statusText += `• من: ${workingHours.startTime}\n`;
+      statusText += `• إلى: ${workingHours.endTime}\n`;
+      statusText += `• الحالة الآن: ${timeCheck.withinHours ? '🟢 ضمن أوقات العمل' : '🔴 خارج أوقات العمل'}\n\n`;
+    }
+
+    const accounts = await this.db.getAllAccounts();
+    const activeAccounts = accounts.filter(acc => acc.balance > 0).length;
+    
+    statusText += `📊 **الإحصائيات:**\n`;
+    statusText += `• إجمالي الحسابات: ${accounts.length}\n`;
+    statusText += `• الحسابات النشطة: ${activeAccounts}\n`;
+    statusText += `• السلسلة الحالية: ${this.currentLetter}\n`;
+    statusText += `• التالي: ${this.getNextCode()}`;
+
+    return statusText;
+  }
+
   async handleCreate(userId, command) {
+    if (!config.systemSettings.createAccounts) {
+      return "⏸️ إنشاء الحسابات الجديدة متوقف حاليًا. الرجاء المحاولة لاحقاً.";
+    }
+    
     const parts = command.split(' ');
     if (parts.length < 2) {
       return `❌ صيغة خاطئة! استخدم:\nانشاء [الاسم الكامل]\nمثال: انشاء كيم شيريونغ`;
@@ -82,6 +397,10 @@ class BankSystem {
   }
 
   async handleTransfer(userId, command) {
+    if (!config.systemSettings.transfers) {
+      return "⏸️ التحويلات متوقفة حاليًا. الرجاء المحاولة لاحقاً.";
+    }
+    
     const match = command.match(/تحويل\s+(\d+)g?\s+لـ?\s*(\w+)/i);
     if (!match) {
       return `❌ صيغة خاطئة! استخدم:\nتحويل [المبلغ] [كود المستلم]\nمثال: تحويل 100 B700B`;
@@ -130,7 +449,12 @@ class BankSystem {
     return `💰 إحصائيات النظام:\n\n• إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}\n• عدد الحسابات: ${accounts.length.toLocaleString()}\n• الحسابات النشطة: ${activeAccounts.toLocaleString()}\n• متوسط الرصيد: ${Math.round(totalGold / accounts.length)} ${config.currency}`;
   }
 
-  async handleArchive(command) {
+  async handleArchive(userId, command) {
+    // الأرشيف للمشرف فقط
+    if (userId !== config.adminUserId) {
+      return `❌ هذا الأمر للمشرف فقط`;
+    }
+    
     const match = command.match(/ارشيف\s+(\w)(\d+)/i);
     if (!match) {
       return `❌ صيغة خاطئة! استخدم:\nارشيف [الحرف][الرقم]\nمثال: ارشيف A1\nمثال: ارشيف B2`;
@@ -175,7 +499,31 @@ class BankSystem {
     return response;
   }
 
-  async handleBalance(command) {
+  // أمر إضافة رصيد (للمشرف فقط)
+  async handleAddBalance(userId, command) {
+    if (userId !== config.adminUserId) {
+      return `❌ هذا الأمر للمشرف فقط`;
+    }
+    
+    const match = command.match(/اضافة\s+(\d+)g?\s+لـ?\s*(\w+)\s+السبب\s+(.+)/i);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nاضافة [المبلغ] [الكود] السبب [السبب]\nمثال: اضافة 5000 B700B السبب فاز في المسابقة`;
+    }
+    
+    const amount = parseFloat(match[1]);
+    const code = match[2].toUpperCase();
+    const reason = match[3];
+    
+    const [success, response] = await this.adminAddBalance(userId, code, amount, reason);
+    return response;
+  }
+
+  // عرض رصيد حساب (للمشرف فقط)
+  async handleBalance(userId, command) {
+    if (userId !== config.adminUserId) {
+      return `❌ هذا الأمر للمشرف فقط`;
+    }
+    
     const match = command.match(/رصيد\s+(\w+)/i);
     if (!match) {
       return `❌ صيغة خاطئة! استخدم:\nرصيد [كود الحساب]\nمثال: رصيد A100A\nمثال: رصيد B700B`;
@@ -197,6 +545,28 @@ class BankSystem {
     }
     
     return `💰 رصيد الحساب:\n\nالكود: ${account.code}\nالاسم: ${account.username}\nالرصيد: ${account.balance} ${config.currency}\nالحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
+  }
+
+  // عرض رصيدي (للمستخدم العادي)
+  async handleMyBalance(userId) {
+    const account = await this.db.getAccountInfo(userId);
+    
+    if (!account) {
+      return `❌ ليس لديك حساب نشط. استخدم \`انشاء [الاسم] [كلمة السر]\` لإنشاء حساب جديد.`;
+    }
+    
+    return `💰 رصيدك: ${account.balance} ${config.currency}`;
+  }
+
+  // عرض حالتي (للمستخدم العادي)
+  async handleMyAccount(userId) {
+    const account = await this.db.getAccountInfo(userId);
+    
+    if (!account) {
+      return `❌ ليس لديك حساب نشط. استخدم \`انشاء [الاسم] [كلمة السر]\` لإنشاء حساب جديد.`;
+    }
+    
+    return `📋 **معلومات حسابك:**\n\n👤 الاسم: ${account.username}\n🆔 الكود: ${account.code}\n💰 الرصيد: ${account.balance} ${config.currency}\n📅 الحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
   }
 
   searchInArchives(code) {
@@ -232,38 +602,33 @@ class BankSystem {
     let helpText = `🏦 **أوامر بنك GOLD - المساعدة**\n\n`;
     
     helpText += `👤 **أوامر المستخدم:**\n`;
-    helpText += `• \`انشاء [الاسم]\` - إنشاء حساب جديد\n`;
+    helpText += `• \`انشاء [الاسم] [كلمة السر]\` - إنشاء حساب جديد\n`;
     helpText += `• \`تحويل [المبلغ] [الكود]\` - تحويل غولد\n`;
-    helpText += `• \`رصيد [الكود]\` - استعلام عن رصيد حساب\n`;
+    helpText += `• \`رصيدي\` - عرض رصيدك\n`;
+    helpText += `• \`حالتي\` - عرض معلومات حسابك\n`;
     helpText += `• \`معرفي\` - عرض معرفك\n`;
+    helpText += `• \`حالة النظام\` - عرض حالة النظام\n`;
+    helpText += `• \`تسجيل خروج\` - تسجيل الخروج\n`;
     helpText += `• \`مساعدة\` - عرض هذه الرسالة\n\n`;
     
-    helpText += `📊 **أوامر الأرشيف:**\n`;
-    helpText += `• \`ارشيف A1\` - الأرشيف الأول من A (A000A-A099A)\n`;
-    helpText += `• \`ارشيف A2\` - الأرشيف الثاني من A (A100A-A199A)\n`;
-    helpText += `• \`ارشيف A3\` - الأرشيف الثالث من A (A200A-A299A)\n`;
-    helpText += `• \`ارشيف A4\` - الأرشيف الرابع من A (A300A-A399A)\n`;
-    helpText += `• \`ارشيف A5\` - الأرشيف الخامس من A (A400A-A499A)\n`;
-    helpText += `• \`ارشيف A6\` - الأرشيف السادس من A (A500A-A599A)\n`;
-    helpText += `• \`ارشيف A7\` - الأرشيف السابع من A (A600A-A699A)\n`;
-    helpText += `• \`ارشيف A8\` - الأرشيف الثامن من A (A700A-A799A)\n`;
-    helpText += `• \`ارشيف A9\` - الأرشيف التاسع من A (A800A-A899A)\n`;
-    helpText += `• \`ارشيف A10\` - الأرشيف العاشر من A (A900A-A999A)\n\n`;
-    
-    helpText += `• \`ارشيف B1\` - الأرشيف الأول من B (B000B-B099B)\n`;
-    helpText += `• \`ارشيف B2\` - الأرشيف الثاني من B (B100B-B199B)\n`;
-    helpText += `• \`ارشيف B3\` - الأرشيف الثالث من B (B200B-B299B)\n`;
-    helpText += `• \`ارشيف B4\` - الأرشيف الرابع من B (B300B-B399B)\n`;
-    helpText += `• \`ارشيف B5\` - الأرشيف الخامس من B (B400B-B499B)\n`;
-    helpText += `• \`ارشيف B6\` - الأرشيف السادس من B (B500B-B599B)\n`;
-    helpText += `• \`ارشيف B7\` - الأرشيف السابع من B (B600B-B699B)\n`;
-    helpText += `• \`ارشيف B8\` - الأرشيف الثامن من B (B700B-B771B)\n\n`;
-    
     if (isAdmin) {
-      helpText += `⚡ **أوامر المشرف:**\n`;
+      helpText += `⚡ **أوامر التحكم بالنظام:**\n`;
+      helpText += `• \`تشغيل البوت\` / \`ايقاف البوت\` - تشغيل/إيقاف البوت\n`;
+      helpText += `• \`تشغيل الانشاء\` / \`ايقاف الانشاء\` - السماح/منع إنشاء حسابات\n`;
+      helpText += `• \`تشغيل التحويلات\` / \`ايقاف التحويلات\` - السماح/منع التحويلات\n`;
+      helpText += `• \`ايقاف الصيانة\` / \`تشغيل الصيانة\` - تفعيل/إلغاء وضع الصيانة\n`;
+      helpText += `• \`تشغيل الاوقات\` / \`ايقاف الاوقات\` - تفعيل/إلغاء أوقات العمل\n`;
+      helpText += `• \`حالة النظام\` - عرض حالة النظام المفصلة\n\n`;
+      
+      helpText += `🔧 **أوامر الإدارة:**\n`;
       helpText += `• \`حظر [الكود]\` - حظر حساب\n`;
       helpText += `• \`مجموع\` - إجمالي الغولد\n`;
-      helpText += `• \`خصم [المبلغ] [الكود] السبب [السبب]\` - خصم غولد\n\n`;
+      helpText += `• \`خصم [المبلغ] [الكود] السبب [السبب]\` - خصم غولد\n`;
+      helpText += `• \`اضافة [المبلغ] [الكود] السبب [السبب]\` - إضافة غولد\n`;
+      helpText += `• \`تعديل [الكود] [الرصيد]\` - تعديل الرصيد مباشرة\n`;
+      helpText += `• \`ربط [الكود] [المعرف] [كلمة السر]\` - ربط حساب\n`;
+      helpText += `• \`رصيد [الكود]\` - استعلام عن رصيد حساب\n`;
+      helpText += `• \`ارشيف [A/B][رقم]\` - عرض الأرشيفات\n\n`;
     }
     
     helpText += `📋 **معلومات النظام:**\n`;
@@ -311,11 +676,12 @@ class BankSystem {
     return text;
   }
 
-  async createAccount(userId, username, customCode = null) {
+  async createAccount(userId, username, password = null, customCode = null) {
     let code = customCode || this.getNextCode();
+    const passwordHash = password ? hashPassword(password) : hashPassword('default123');
     
     try {
-      await this.db.createAccount(userId, code, username, config.initialBalance);
+      await this.db.createAccount(userId, code, username, passwordHash, config.initialBalance);
       
       return [true, {
         message: "تم الإنشاء بنجاح",
@@ -402,6 +768,82 @@ class BankSystem {
       return [true, `✅ تم الخصم بنجاح!\nالحساب: ${code}\nالمبلغ: ${amount} ${config.currency}\nالسبب: ${reason}\nالرصيد الجديد: ${newBalance} ${config.currency}`];
     } catch (error) {
       return [false, "❌ فشل في الخصم"];
+    }
+  }
+
+  // دالة إضافة الرصيد في النظام
+  async adminAddBalance(adminId, code, amount, reason = '') {
+    if (adminId !== config.adminUserId) {
+      return [false, "غير مصرح لك"];
+    }
+    
+    const account = await this.db.getAccountByCode(code);
+    if (!account) {
+      return [false, "❌ الحساب غير موجود"];
+    }
+    
+    if (config.blacklistedAccounts.includes(code)) {
+      return [false, "❌ لا يمكن تعديل حساب محظور"];
+    }
+    
+    const currentBalance = account.balance;
+    const newBalance = currentBalance + amount;
+    
+    try {
+      await this.db.updateBalance(account.user_id, newBalance);
+      await this.db.logOperation('add', amount, null, code, reason, adminId);
+      
+      return [true, `✅ تم الإضافة بنجاح!\nالحساب: ${code}\nالمبلغ: +${amount} ${config.currency}\nالسبب: ${reason}\nالرصيد الجديد: ${newBalance} ${config.currency}`];
+    } catch (error) {
+      return [false, "❌ فشل في الإضافة"];
+    }
+  }
+
+  // ربط حساب بمستخدم وكلمة سر
+  async linkAccount(code, targetUserId, password) {
+    const account = await this.db.getAccountByCode(code);
+    if (!account) {
+      return [false, "❌ الحساب غير موجود"];
+    }
+    
+    if (password.length < 4) {
+      return [false, "❌ كلمة السر يجب أن تكون 4 أحرف على الأقل"];
+    }
+    
+    const passwordHash = hashPassword(password);
+    
+    try {
+      await this.db.updateUserId(account.user_id, targetUserId);
+      await this.db.updateAccountPassword(targetUserId, passwordHash);
+      
+      return [true, `✅ تم ربط الحساب بنجاح!\nالكود: ${code}\nالمعرف: ${targetUserId}\nكلمة السر: ${password}`];
+    } catch (error) {
+      return [false, `❌ فشل في ربط الحساب: ${error.message}`];
+    }
+  }
+
+  // تعديل الرصيد مباشرة
+  async modifyBalance(code, newBalance) {
+    const account = await this.db.getAccountByCode(code);
+    if (!account) {
+      return [false, "❌ الحساب غير موجود"];
+    }
+    
+    if (config.blacklistedAccounts.includes(code)) {
+      return [false, "❌ لا يمكن تعديل حساب محظور"];
+    }
+    
+    if (newBalance < 0) {
+      return [false, "❌ الرصيد لا يمكن أن يكون سالباً"];
+    }
+    
+    try {
+      await this.db.updateBalance(account.user_id, newBalance);
+      await this.db.logOperation('modify', newBalance - account.balance, null, code, 'تعديل مباشر', config.adminUserId);
+      
+      return [true, `✅ تم التعديل بنجاح!\nالحساب: ${code}\nالرصيد الجديد: ${newBalance} ${config.currency}\nالرصيد السابق: ${account.balance} ${config.currency}`];
+    } catch (error) {
+      return [false, "❌ فشل في التعديل"];
     }
   }
 }
