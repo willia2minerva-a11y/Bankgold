@@ -84,12 +84,24 @@ app.get('/', (req, res) => {
                 border-radius: 10px;
                 text-align: center;
             }
+            .system-status {
+                background: #f39c12;
+                color: white;
+                padding: 15px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+            }
         </style>
     </head>
     <body>
         <div class="container">
             <h1>🏦 نظام بنك GOLD البنكي</h1>
             <div class="status">✅ النظام يعمل بشكل طبيعي وجاهز للاستخدام</div>
+            
+            ${!config.systemSettings.botEnabled ? '<div class="system-status">⏸️ البوت متوقف حاليًا</div>' : ''}
+            ${config.systemSettings.maintenanceMode ? '<div class="system-status">🛠️ النظام تحت الصيانة</div>' : ''}
+            ${!config.systemSettings.createAccounts ? '<div class="system-status">⏸️ إنشاء الحسابات متوقف</div>' : ''}
+            ${!config.systemSettings.transfers ? '<div class="system-status">⏸️ التحويلات متوقفة</div>' : ''}
             
             <div class="stats">
                 <div class="stat-card">
@@ -102,16 +114,37 @@ app.get('/', (req, res) => {
                 </div>
                 <div class="stat-card">
                     <h3>السلسلة الحالية</h3>
-                    <p style="font-size: 24px; margin: 10px 0;">B</p>
+                    <p style="font-size: 24px; margin: 10px 0;">${config.currentLetter}</p>
+                </div>
+                <div class="stat-card">
+                    <h3>التالي</h3>
+                    <p style="font-size: 24px; margin: 10px 0;">${bankSystem.getNextCode()}</p>
                 </div>
             </div>
 
             <div class="commands">
+                <h2 class="section-title">🔐 نظام الأمان الجديد:</h2>
+                
+                <div class="command">
+                    <strong>إنشاء حساب آمن:</strong><br>
+                    <code>انشاء [الاسم الكامل] [كلمة السر]</code>
+                </div>
+                
+                <div class="command">
+                    <strong>تسجيل الدخول:</strong><br>
+                    <code>تسجيل [الكود] [كلمة السر]</code>
+                </div>
+                
+                <div class="command">
+                    <strong>استعادة حساب:</strong><br>
+                    <code>استعادة [الكود] [كلمة السر]</code>
+                </div>
+
                 <h2 class="section-title">📋 الأوامر المتاحة في الماسنجر:</h2>
                 
                 <div class="command">
                     <strong>👤 إنشاء حساب:</strong><br>
-                    <code>انشاء [الاسم الكامل]</code>
+                    <code>انشاء [الاسم الكامل] [كلمة السر]</code>
                 </div>
                 
                 <div class="command">
@@ -121,41 +154,49 @@ app.get('/', (req, res) => {
                 
                 <div class="command">
                     <strong>💰 استعلام الرصيد:</strong><br>
-                    <code>رصيد [كود الحساب]</code>
+                    <code>رصيدي</code> - لعرض رصيدك<br>
+                    <code>حالتي</code> - لعرض معلومات حسابك
                 </div>
                 
                 <div class="command">
-                    <strong>📁 الأرشيفات:</strong><br>
-                    <code>ارشيف A1</code> إلى <code>ارشيف A10</code><br>
-                    <code>ارشيف B1</code> إلى <code>ارشيف B8</code>
-                </div>
-                
-                <div class="command">
-                    <strong>ℹ️ المساعدة:</strong><br>
-                    <code>مساعدة</code> أو <code>اوامر</code>
+                    <strong>ℹ️ معلومات:</strong><br>
+                    <code>مساعدة</code> - عرض جميع الأوامر<br>
+                    <code>حالة النظام</code> - حالة النظام الحالية
                 </div>
 
                 <h2 class="section-title">⚡ أوامر المشرف:</h2>
                 
                 <div class="command">
-                    <strong>🚫 حظر الحسابات:</strong><br>
-                    <code>حظر [كود الحساب]</code>
+                    <strong>🔧 التحكم بالنظام:</strong><br>
+                    <code>تشغيل/ايقاف البوت</code><br>
+                    <code>تشغيل/ايقاف الانشاء</code><br>
+                    <code>تشغيل/ايقاف التحويلات</code>
+                </div>
+                
+                <div class="command">
+                    <strong>🚫 إدارة الحسابات:</strong><br>
+                    <code>حظر [كود الحساب]</code><br>
+                    <code>ربط [الكود] [المعرف] [كلمة السر]</code>
                 </div>
                 
                 <div class="command">
                     <strong>📊 الإحصائيات:</strong><br>
-                    <code>مجموع</code>
+                    <code>مجموع</code><br>
+                    <code>ارشيف [A/B][رقم]</code>
                 </div>
                 
                 <div class="command">
-                    <strong>📉 خصم الأموال:</strong><br>
-                    <code>خصم [المبلغ] [الكود] السبب [السبب]</code>
+                    <strong>💰 إدارة الأموال:</strong><br>
+                    <code>خصم [المبلغ] [الكود] السبب [السبب]</code><br>
+                    <code>اضافة [المبلغ] [الكود] السبب [السبب]</code><br>
+                    <code>تعديل [الكود] [الرصيد]</code>
                 </div>
             </div>
 
             <div style="margin-top: 30px; padding: 20px; background: #f1f2f6; border-radius: 10px; text-align: center;">
                 <p>🚀 <strong>التالي:</strong> ${bankSystem.getNextCode()}</p>
                 <p>💼 <strong>الحسابات الجديدة تبدأ من:</strong> B772B</p>
+                <p>🔒 <strong>نظام الأمان:</strong> مفعل (كلمة سر + كود فريد)</p>
             </div>
         </div>
     </body>
@@ -226,6 +267,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 البوت يعمل على المنفذ ${PORT}`);
   console.log(`🏦 نظام بنك جولد جاهز للاستخدام`);
+  console.log(`🔒 نظام الأمان الجديد: مفعل`);
   console.log(`📊 إجمالي الحسابات: 1,771 حساب`);
   console.log(`📁 الأرشيفات: 10 لـA و 8 لـB`);
   console.log(`💬 الأوامر متاحة عبر فيسبوك ماسنجر`);
