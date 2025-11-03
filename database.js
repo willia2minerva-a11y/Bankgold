@@ -13,9 +13,11 @@ class Database {
         user_id TEXT,
         code TEXT UNIQUE,
         username TEXT NOT NULL,
+        password TEXT NOT NULL,
         balance REAL,
         status TEXT DEFAULT 'active',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `;
 
@@ -53,10 +55,10 @@ class Database {
     this.db.run(createOperationsTable);
   }
 
-  createAccount(userId, code, username, balance) {
+  createAccount(userId, code, username, password, balance) {
     return new Promise((resolve, reject) => {
-      const sql = `INSERT INTO accounts (user_id, code, username, balance) VALUES (?, ?, ?, ?)`;
-      this.db.run(sql, [userId, code, username, balance], function(err) {
+      const sql = `INSERT INTO accounts (user_id, code, username, password, balance) VALUES (?, ?, ?, ?, ?)`;
+      this.db.run(sql, [userId, code, username, password, balance], function(err) {
         if (err) {
           reject(err);
         } else {
@@ -107,7 +109,7 @@ class Database {
 
   getAccountInfo(userId) {
     return new Promise((resolve, reject) => {
-      const sql = `SELECT user_id, code, username, balance, status FROM accounts WHERE user_id = ?`;
+      const sql = `SELECT user_id, code, username, balance, status, password FROM accounts WHERE user_id = ?`;
       this.db.get(sql, [userId], (err, row) => {
         if (err) {
           reject(err);
@@ -117,7 +119,8 @@ class Database {
             code: row.code,
             username: row.username,
             balance: row.balance,
-            status: row.status
+            status: row.status,
+            password: row.password
           } : null);
         }
       });
@@ -126,7 +129,7 @@ class Database {
 
   getAccountByCode(code) {
     return new Promise((resolve, reject) => {
-      const sql = `SELECT user_id, code, username, balance, status FROM accounts WHERE code = ?`;
+      const sql = `SELECT user_id, code, username, balance, status, password FROM accounts WHERE code = ?`;
       this.db.get(sql, [code], (err, row) => {
         if (err) {
           reject(err);
@@ -136,7 +139,8 @@ class Database {
             code: row.code,
             username: row.username,
             balance: row.balance,
-            status: row.status
+            status: row.status,
+            password: row.password
           } : null);
         }
       });
@@ -205,6 +209,45 @@ class Database {
     });
   }
 
+  updateUserId(oldUserId, newUserId) {
+    return new Promise((resolve, reject) => {
+      const sql = `UPDATE accounts SET user_id = ?, last_login = CURRENT_TIMESTAMP WHERE user_id = ?`;
+      this.db.run(sql, [newUserId, oldUserId], function(err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(true);
+        }
+      });
+    });
+  }
+
+  updateAccountPassword(userId, passwordHash) {
+    return new Promise((resolve, reject) => {
+      const sql = `UPDATE accounts SET password = ? WHERE user_id = ?`;
+      this.db.run(sql, [passwordHash, userId], function(err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(true);
+        }
+      });
+    });
+  }
+
+  updateLastLogin(userId) {
+    return new Promise((resolve, reject) => {
+      const sql = `UPDATE accounts SET last_login = CURRENT_TIMESTAMP WHERE user_id = ?`;
+      this.db.run(sql, [userId], function(err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(true);
+        }
+      });
+    });
+  }
+
   getAllAccounts() {
     return new Promise((resolve, reject) => {
       const sql = `SELECT code, username, balance, status FROM accounts WHERE status = 'active' ORDER BY code`;
@@ -238,6 +281,30 @@ class Database {
           resolve(true);
         }
       });
+    });
+  }
+
+  logSystemOperation(type, target, action, adminId, details = '') {
+    return new Promise((resolve, reject) => {
+        const sql = `
+            INSERT INTO operations (type, amount, to_code, reason, admin_id, card_data) 
+            VALUES (?, ?, ?, ?, ?, ?)
+        `;
+        
+        const cardData = JSON.stringify({
+            system_operation: true,
+            target: target,
+            action: action,
+            details: details
+        });
+        
+        this.db.run(sql, [type, 0, target, action, adminId, cardData], function(err) {
+            if (err) {
+                reject(err);
+            } else {
+                resolve(true);
+            }
+        });
     });
   }
 }
