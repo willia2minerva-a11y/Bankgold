@@ -16,11 +16,20 @@ function generateUserCode() {
     if (currentNumber > 999) {
         currentNumber = 1;
         currentLetter = 'C';
-        config.currentNumber = currentNumber;
-        config.currentLetter = currentLetter;
-    } else {
-        config.currentNumber = currentNumber;
     }
+    
+    // حفظ الإعدادات الجديدة
+    const newSettings = {
+        currentLetter: currentLetter,
+        currentNumber: currentNumber
+    };
+    
+    // تحديث الإعدادات في الذاكرة
+    config.currentLetter = currentLetter;
+    config.currentNumber = currentNumber;
+    
+    // حفظ الإعدادات في الملف
+    config.saveSettings(newSettings);
     
     return `${currentLetter}${currentNumber.toString().padStart(3, '0')}${currentLetter}`;
 }
