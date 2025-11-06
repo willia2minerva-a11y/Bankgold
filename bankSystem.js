@@ -10,17 +10,32 @@ class BankSystem {
     this.currentLetter = config.currentLetter;
     this.currentNumber = config.currentNumber;
     this.loginSessions = new Map();
-    this.admins = new Set([config.adminUserId]); // المدير الأساسي + المشرفين المضافين
+    this.admins = new Map([[config.adminUserId, 'عام']]); // المدير الأساسي + المشرفين المضافين
   }
 
   // دالة مساعدة للتحقق من المدير أو المشرف
   isAdmin(userId) {
-    return userId === config.adminUserId || this.admins.has(userId);
+    return this.admins.has(userId);
   }
 
   // دالة للتحقق من المدير الأساسي فقط
   isSuperAdmin(userId) {
     return userId === config.adminUserId;
+  }
+
+  // التحقق من صلاحيات المشرف
+  hasPermission(userId, permission) {
+    if (!this.isAdmin(userId)) return false;
+    
+    const adminType = this.admins.get(userId);
+    
+    const permissions = {
+      'محاسبة': ['انشاء', 'ربط', 'تحويل', 'رصيد', 'ارشيف'],
+      'متجر': ['خصم', 'اضافة', 'تعديل'],
+      'عام': ['انشاء', 'ربط', 'تحويل', 'رصيد', 'ارشيف', 'خصم', 'اضافة', 'تعديل', 'حظر', 'فك حظر', 'محظورين']
+    };
+    
+    return permissions[adminType]?.includes(permission) || false;
   }
 
   getNextCode() {
@@ -36,8 +51,14 @@ class BankSystem {
 
   // التحقق من حالة النظام قبل معالجة أي أمر
   async processCommand(userId, message) {
+    // السماح للمدير باستخدام الأوامر دون تسجيل دخول
+    if (this.isAdmin(userId)) {
+      const command = message.trim().toLowerCase();
+      return await this.handleAdminCommand(userId, command);
+    }
+
     // التحقق من حالة البوت العامة
-    if (!config.systemSettings.botEnabled && !this.isAdmin(userId)) {
+    if (!config.systemSettings.botEnabled) {
       return config.systemSettings.maintenanceMode ? 
         config.systemSettings.maintenanceMessage : 
         "⏸️ البوت متوقف حاليًا. الرجاء المحاولة لاحقاً.";
@@ -45,12 +66,12 @@ class BankSystem {
 
     // التحقق من أوقات العمل
     const timeCheck = this.checkWorkingHours();
-    if (!timeCheck.withinHours && !this.isAdmin(userId)) {
+    if (!timeCheck.withinHours) {
       return timeCheck.message;
     }
 
     // التحقق من وضع الصيانة
-    if (config.systemSettings.maintenanceMode && !this.isAdmin(userId)) {
+    if (config.systemSettings.maintenanceMode) {
       return config.systemSettings.maintenanceMessage;
     }
 
@@ -71,47 +92,8 @@ class BankSystem {
     
     // إذا كان مسجل الدخول، نعالج الأوامر العادية
     try {
-      if (command.startsWith('انشاء')) {
-        return await this.handleCreate(userId, command);
-      }
-      else if (command.startsWith('تحويل')) {
+      if (command.startsWith('تحويل')) {
         return await this.handleTransfer(userId, command);
-      }
-      else if (command.startsWith('حظر')) {
-        return await this.handleBan(userId, command);
-      }
-      else if (command.startsWith('فك حظر')) {
-        return await this.handleUnban(userId, command);
-      }
-      else if (command === 'مجموع') {
-        return await this.handleTotal(userId);
-      }
-      else if (command.startsWith('ارشيف')) {
-        return await this.handleArchive(userId, command);
-      }
-      else if (command.startsWith('خصم')) {
-        return await this.handleDeduct(userId, command);
-      }
-      else if (command.startsWith('رصيد')) {
-        return await this.handleBalance(userId, command);
-      }
-      else if (command.startsWith('اضافة')) {
-        return await this.handleAddBalance(userId, command);
-      }
-      else if (command.startsWith('ايقاف') || command.startsWith('تشغيل')) {
-        return await this.handleSystemControl(userId, command);
-      }
-      else if (command.startsWith('ربط')) {
-        return await this.handleLinkAccount(userId, command);
-      }
-      else if (command.startsWith('تعديل')) {
-        return await this.handleModifyBalance(userId, command);
-      }
-      else if (command.startsWith('اضف مشرف')) {
-        return await this.handleAddAdmin(userId, command);
-      }
-      else if (command.startsWith('احذف مشرف')) {
-        return await this.handleRemoveAdmin(userId, command);
       }
       else if (command === 'معرفي') {
         return await this.handleGetId(userId);
@@ -128,9 +110,6 @@ class BankSystem {
       else if (command === 'تسجيل خروج') {
         return await this.handleLogout(userId);
       }
-      else if (command === 'حالة النظام') {
-        return await this.handleSystemStatus(userId);
-      }
       else {
         return this.getUnknownCommandResponse(command);
       }
@@ -139,6 +118,100 @@ class BankSystem {
       console.error('❌ خطأ في معالجة الأمر:', error);
       return `❌ حدث خطأ: ${error.message}`;
     }
+  }
+
+  // معالجة أوامر المديرين (بدون تسجيل دخول)
+  async handleAdminCommand(userId, command) {
+    try {
+      if (command.startsWith('انشاء')) {
+        if (!this.hasPermission(userId, 'انشاء')) return this.getPermissionDeniedMessage();
+        return await this.handleCreate(userId, command);
+      }
+      else if (command.startsWith('تحويل')) {
+        if (!this.hasPermission(userId, 'تحويل')) return this.getPermissionDeniedMessage();
+        return await this.handleTransfer(userId, command);
+      }
+      else if (command.startsWith('حظر')) {
+        if (!this.hasPermission(userId, 'حظر')) return this.getPermissionDeniedMessage();
+        return await this.handleBan(userId, command);
+      }
+      else if (command.startsWith('فك حظر')) {
+        if (!this.hasPermission(userId, 'فك حظر')) return this.getPermissionDeniedMessage();
+        return await this.handleUnban(userId, command);
+      }
+      else if (command === 'مجموع') {
+        // مجموع للمدير الأساسي فقط
+        if (!this.isSuperAdmin(userId)) return this.getPermissionDeniedMessage();
+        return await this.handleTotal(userId);
+      }
+      else if (command.startsWith('ارشيف')) {
+        if (!this.hasPermission(userId, 'ارشيف')) return this.getPermissionDeniedMessage();
+        return await this.handleArchive(userId, command);
+      }
+      else if (command.startsWith('خصم')) {
+        if (!this.hasPermission(userId, 'خصم')) return this.getPermissionDeniedMessage();
+        return await this.handleDeduct(userId, command);
+      }
+      else if (command.startsWith('رصيد')) {
+        if (!this.hasPermission(userId, 'رصيد')) return this.getPermissionDeniedMessage();
+        return await this.handleBalance(userId, command);
+      }
+      else if (command.startsWith('اضافة')) {
+        if (!this.hasPermission(userId, 'اضافة')) return this.getPermissionDeniedMessage();
+        return await this.handleAddBalance(userId, command);
+      }
+      else if (command.startsWith('ايقاف') || command.startsWith('تشغيل')) {
+        return await this.handleSystemControl(userId, command);
+      }
+      else if (command.startsWith('ربط')) {
+        if (!this.hasPermission(userId, 'ربط')) return this.getPermissionDeniedMessage();
+        return await this.handleLinkAccount(userId, command);
+      }
+      else if (command.startsWith('تعديل')) {
+        if (!this.hasPermission(userId, 'تعديل')) return this.getPermissionDeniedMessage();
+        return await this.handleModifyBalance(userId, command);
+      }
+      else if (command.startsWith('اضف مشرف')) {
+        return await this.handleAddAdmin(userId, command);
+      }
+      else if (command.startsWith('احذف مشرف')) {
+        return await this.handleRemoveAdmin(userId, command);
+      }
+      else if (command === 'معرفي') {
+        return await this.handleGetId(userId);
+      }
+      else if (command === 'توب') {
+        // توب للمدير الأساسي فقط
+        if (!this.isSuperAdmin(userId)) return this.getPermissionDeniedMessage();
+        return await this.handleTopUsers(userId);
+      }
+      else if (command === 'اجمالي' || command === 'الكل') {
+        // اجمالي للمدير الأساسي فقط
+        if (!this.isSuperAdmin(userId)) return this.getPermissionDeniedMessage();
+        return await this.handleTotalGold(userId);
+      }
+      else if (command === 'محظورين') {
+        if (!this.hasPermission(userId, 'محظورين')) return this.getPermissionDeniedMessage();
+        return await this.handleBannedUsers(userId);
+      }
+      else if (command === 'مساعدة' || command === 'اوامر') {
+        return await this.handleHelp(userId);
+      }
+      else if (command === 'حالة النظام') {
+        return await this.handleSystemStatus(userId);
+      }
+      else {
+        return this.getUnknownCommandResponse(command);
+      }
+    } catch (error) {
+      console.error('❌ خطأ في معالجة أمر المدير:', error);
+      return `❌ حدث خطأ: ${error.message}`;
+    }
+  }
+
+  // رسالة رفض الصلاحية
+  getPermissionDeniedMessage() {
+    return "❌ ليس لديك الصلاحية لاستخدام هذا الأمر!";
   }
 
   // معالجة الأوامر العامة (بدون تسجيل دخول)
@@ -196,20 +269,22 @@ class BankSystem {
 
   // رسالة ترحيب للمستخدمين الجدد
   getWelcomeMessage() {
-    return `🏦 **مرحباً في بنك GOLD**\n\n` +
-           `📋 **الأوامر المتاحة:**\n` +
-           `• \`تسجيل [الكود] [كلمة السر]\` - تسجيل الدخول\n` +
-           `• \`رصيدي\` - عرض رصيدك\n` +
-           `• \`معرفي\` - عرض معرفك\n` +
-           `• \`تواصل\` - التواصل مع المسؤول لإنشاء حساب\n` +
-           `• \`مساعدة\` - عرض الأوامر المتاحة\n\n` +
-           `🔒 **لإنشاء حساب جديد، تواصل مع المسؤول**`;
+    return `🏦 مرحباً في بنك GOLD
+
+📋 الأوامر المتاحة:
+• تسجيل [الكود] [كلمة السر] - تسجيل الدخول
+• رصيدي - عرض رصيدك
+• معرفي - عرض معرفك
+• تواصل - التواصل مع المسؤول لإنشاء حساب
+• مساعدة - عرض الأوامر المتاحة
+
+🔒 لإنشاء حساب جديد، تواصل مع المسؤول`;
   }
 
   // إنشاء حساب بكلمة سر (للمشرفين فقط)
   async handleCreateWithPassword(userId, command) {
     if (!this.isAdmin(userId)) {
-      return "❌ إنشاء الحسابات متاح للمشرفين فقط.\n\n📞 للتواصل مع المسؤول لإنشاء حساب، اكتب: `تواصل`";
+      return "❌ إنشاء الحسابات متاح للمشرفين فقط.\n\n📞 للتواصل مع المسؤول لإنشاء حساب، اكتب: تواصل";
     }
 
     const match = command.match(/انشاء\s+([^]+)\s+(\S+)/);
@@ -227,8 +302,14 @@ class BankSystem {
     const [success, response] = await this.createAccount(userId, username, password);
     
     if (success) {
-      this.loginSessions.set(userId, true);
-      return `✅ تم إنشاء الحساب بنجاح!\n\n📋 معلومات الحساب:\nالكود: ${response.account.code}\nالاسم: ${response.account.username}\nالرصيد: ${response.account.balance} ${config.currency}\n\n🔒 **احفظ كودك وكلمة السر**`;
+      return `✅ تم إنشاء الحساب بنجاح!
+
+📋 معلومات الحساب:
+الكود: ${response.account.code}
+الاسم: ${response.account.username}
+الرصيد: ${response.account.balance} ${config.currency}
+
+🔒 احفظ كودك وكلمة السر`;
     } else {
       return response;
     }
@@ -299,7 +380,7 @@ class BankSystem {
   // ربط حساب (للمشرف فقط)
   async handleLinkAccount(userId, command) {
     if (!this.isAdmin(userId)) {
-      return `❌ هذا الأمر للمشرف فقط`;
+      return `❌ هذا الأمر للمشرفين فقط`;
     }
     
     const match = command.match(/ربط\s+(\w+)\s+(\d+)\s+(\S+)/);
@@ -318,7 +399,7 @@ class BankSystem {
   // تعديل الرصيد (للمشرف فقط)
   async handleModifyBalance(userId, command) {
     if (!this.isAdmin(userId)) {
-      return `❌ هذا الأمر للمشرف فقط`;
+      return `❌ هذا الأمر للمشرفين فقط`;
     }
     
     const match = command.match(/تعديل\s+(\w+)\s+(\d+)/);
@@ -339,19 +420,25 @@ class BankSystem {
       return `❌ هذا الأمر للمدير الأساسي فقط`;
     }
     
-    const match = command.match(/اضف مشرف\s+(\d+)/);
+    const match = command.match(/اضف مشرف\s+(\d+)\s+(\S+)/);
     if (!match) {
-      return `❌ صيغة خاطئة! استخدم:\nاضف مشرف [المعرف]\nمثال: اضف مشرف 24570538679239653`;
+      return `❌ صيغة خاطئة! استخدم:\nاضف مشرف [المعرف] [النوع]\nالأنواع: محاسبة، متجر، عام\nمثال: اضف مشرف 24570538679239653 محاسبة`;
     }
     
     const adminId = match[1];
+    const adminType = match[2];
+    
+    const validTypes = ['محاسبة', 'متجر', 'عام'];
+    if (!validTypes.includes(adminType)) {
+      return `❌ نوع المشرف غير صحيح!\nالأنواع المتاحة: ${validTypes.join('، ')}`;
+    }
     
     if (this.admins.has(adminId)) {
       return `❌ هذا المستخدم مشرف بالفعل!`;
     }
     
-    this.admins.add(adminId);
-    return `✅ تم إضافة المشرف بنجاح!\nالمعرف: ${adminId}\n\n⚠️ يمكن للمشرف استخدام جميع أوامر الإدارة لكن لا يمكنه إضافة أو حذف مشرفين آخرين`;
+    this.admins.set(adminId, adminType);
+    return `✅ تم إضافة المشرف بنجاح!\nالمعرف: ${adminId}\nالنوع: ${adminType}\n\n⚠️ يمكن للمشرف استخدام الأوامر الخاصة بنوعه فقط`;
   }
 
   // حذف مشرف (للمدير الأساسي فقط)
@@ -393,6 +480,94 @@ class BankSystem {
     const code = match[1].toUpperCase();
     const [success, response] = await this.unbanAccount(userId, code);
     return response;
+  }
+
+  // عرض أعلى 10 مستخدمين (للمدير الأساسي فقط)
+  async handleTopUsers(userId) {
+    const accounts = await this.db.getAllAccounts();
+    
+    // ترتيب الحسابات حسب الرصيد (تنازلي)
+    const sortedAccounts = accounts
+      .filter(acc => acc.balance > 0)
+      .sort((a, b) => b.balance - a.balance)
+      .slice(0, 10);
+    
+    if (sortedAccounts.length === 0) {
+      return "📊 لا توجد حسابات نشطة لعرضها";
+    }
+    
+    let topText = "🏆 أعلى 10 حسابات حسب الرصيد:\n\n";
+    
+    sortedAccounts.forEach((account, index) => {
+      const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "🔸";
+      topText += `${medal} ${account.code} - ${account.username}\n   💰 ${account.balance} ${config.currency}\n\n`;
+    });
+    
+    const totalGold = sortedAccounts.reduce((sum, acc) => sum + acc.balance, 0);
+    topText += `---\nإجمالي أعلى 10: ${totalGold} ${config.currency}`;
+    
+    return topText;
+  }
+
+  // عرض إجمالي الغولد في الأرشيفات (للمدير الأساسي فقط)
+  async handleTotalGold(userId) {
+    let totalGold = 0;
+    let totalAccounts = 0;
+    
+    // حساب الأرشيفات A
+    Object.values(archiveA).forEach(archive => {
+      archive.accounts.forEach(account => {
+        totalGold += account.balance;
+        totalAccounts++;
+      });
+    });
+    
+    // حساب الأرشيفات B
+    Object.values(archiveB).forEach(archive => {
+      archive.accounts.forEach(account => {
+        totalGold += account.balance;
+        totalAccounts++;
+      });
+    });
+    
+    // حساب الحسابات النشطة في قاعدة البيانات
+    const activeAccounts = await this.db.getAllAccounts();
+    activeAccounts.forEach(account => {
+      totalGold += account.balance;
+      totalAccounts++;
+    });
+    
+    return `💰 إجمالي الغولد في النظام:
+
+📊 الإحصائيات:
+• إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
+• عدد الحسابات: ${totalAccounts.toLocaleString()}
+• متوسط الرصيد: ${Math.round(totalGold / totalAccounts)} ${config.currency}
+
+📁 المصادر:
+• الأرشيفات A: 1,000 حساب
+• الأرشيفات B: 772 حساب  
+• الحسابات النشطة: ${activeAccounts.length} حساب`;
+  }
+
+  // عرض المحظورين
+  async handleBannedUsers(userId) {
+    const accounts = await this.db.getAllAccounts();
+    const bannedAccounts = accounts.filter(acc => acc.status === 'banned');
+    
+    if (bannedAccounts.length === 0) {
+      return "✅ لا توجد حسابات محظورة حالياً";
+    }
+    
+    let bannedText = "🚫 الحسابات المحظورة:\n\n";
+    
+    bannedAccounts.forEach(account => {
+      bannedText += `• ${account.code} - ${account.username}\n`;
+    });
+    
+    bannedText += `\n---\nإجمالي المحظورين: ${bannedAccounts.length} حساب`;
+    
+    return bannedText;
   }
 
   // التحكم في النظام (للمشرفين فقط)
@@ -448,37 +623,43 @@ class BankSystem {
     const workingHours = config.workingHours;
     const timeCheck = this.checkWorkingHours();
 
-    let statusText = `🏦 **حالة النظام الحالية**\n\n`;
+    let statusText = `🏦 حالة النظام الحالية
 
-    statusText += `🔧 **إعدادات النظام:**\n`;
-    statusText += `• البوت: ${status.botEnabled ? '🟢 نشط' : '🔴 متوقف'}\n`;
-    statusText += `• إنشاء الحسابات: ${status.createAccounts ? '🟢 مفعل' : '🔴 متوقف'}\n`;
-    statusText += `• التحويلات: ${status.transfers ? '🟢 مفعلة' : '🔴 متوقفة'}\n`;
-    statusText += `• وضع الصيانة: ${status.maintenanceMode ? '🟡 مفعل' : '🔴 غير مفعل'}\n`;
-    statusText += `• أوقات العمل: ${workingHours.enabled ? '🟢 مفعلة' : '🔴 غير مفعلة'}\n\n`;
+🔧 إعدادات النظام:
+• البوت: ${status.botEnabled ? '🟢 نشط' : '🔴 متوقف'}
+• إنشاء الحسابات: ${status.createAccounts ? '🟢 مفعل' : '🔴 متوقف'}
+• التحويلات: ${status.transfers ? '🟢 مفعلة' : '🔴 متوقفة'}
+• وضع الصيانة: ${status.maintenanceMode ? '🟡 مفعل' : '🔴 غير مفعل'}
+• أوقات العمل: ${workingHours.enabled ? '🟢 مفعلة' : '🔴 غير مفعلة'}
+
+`;
 
     if (workingHours.enabled) {
-      statusText += `⏰ **أوقات العمل:**\n`;
-      statusText += `• من: ${workingHours.startTime}\n`;
-      statusText += `• إلى: ${workingHours.endTime}\n`;
-      statusText += `• الحالة الآن: ${timeCheck.withinHours ? '🟢 ضمن أوقات العمل' : '🔴 خارج أوقات العمل'}\n\n`;
+      statusText += `⏰ أوقات العمل:
+• من: ${workingHours.startTime}
+• إلى: ${workingHours.endTime}
+• الحالة الآن: ${timeCheck.withinHours ? '🟢 ضمن أوقات العمل' : '🔴 خارج أوقات العمل'}
+
+`;
     }
 
     const accounts = await this.db.getAllAccounts();
     const activeAccounts = accounts.filter(acc => acc.balance > 0).length;
+    const totalGold = accounts.reduce((sum, acc) => sum + acc.balance, 0);
     
-    statusText += `📊 **الإحصائيات:**\n`;
-    statusText += `• إجمالي الحسابات: ${accounts.length}\n`;
-    statusText += `• الحسابات النشطة: ${activeAccounts}\n`;
-    statusText += `• السلسلة الحالية: ${this.currentLetter}\n`;
-    statusText += `• التالي: ${this.getNextCode()}`;
+    statusText += `📊 الإحصائيات:
+• إجمالي الحسابات: ${accounts.length}
+• الحسابات النشطة: ${activeAccounts}
+• إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
+• السلسلة الحالية: ${this.currentLetter}
+• التالي: ${this.getNextCode()}`;
 
     return statusText;
   }
 
   async handleCreate(userId, command) {
     if (!this.isAdmin(userId)) {
-      return "❌ إنشاء الحسابات متاح للمشرفين فقط.\n\n📞 للتواصل مع المسؤول لإنشاء حساب، اكتب: `تواصل`";
+      return "❌ إنشاء الحسابات متاح للمشرفين فقط.\n\n📞 للتواصل مع المسؤول لإنشاء حساب، اكتب: تواصل";
     }
     
     const parts = command.split(' ');
@@ -494,7 +675,14 @@ class BankSystem {
     const [success, response] = await this.createAccount(userId, username);
     
     if (success) {
-      return `✅ تم إنشاء الحساب بنجاح!\n\n📋 معلومات الحساب:\nالكود: ${response.account.code}\nالاسم: ${response.account.username}\nالرصيد: ${response.account.balance} ${config.currency}\n\n💳 تم إضافة البطاقة إلى الأرشيف`;
+      return `✅ تم إنشاء الحساب بنجاح!
+
+📋 معلومات الحساب:
+الكود: ${response.account.code}
+الاسم: ${response.account.username}
+الرصيد: ${response.account.balance} ${config.currency}
+
+💳 تم إضافة البطاقة إلى الأرشيف`;
     } else {
       return response;
     }
@@ -537,8 +725,9 @@ class BankSystem {
   }
 
   async handleTotal(userId) {
-    if (!this.isAdmin(userId)) {
-      return `❌ هذا الأمر للمشرفين فقط`;
+    // مجموع للمدير الأساسي فقط
+    if (!this.isSuperAdmin(userId)) {
+      return `❌ هذا الأمر للمدير الأساسي فقط`;
     }
     
     const accounts = await this.db.getAllAccounts();
@@ -550,7 +739,12 @@ class BankSystem {
       if (account.balance > 0) activeAccounts++;
     });
     
-    return `💰 إحصائيات النظام:\n\n• إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}\n• عدد الحسابات: ${accounts.length.toLocaleString()}\n• الحسابات النشطة: ${activeAccounts.toLocaleString()}\n• متوسط الرصيد: ${Math.round(totalGold / accounts.length)} ${config.currency}`;
+    return `💰 إحصائيات النظام:
+
+• إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
+• عدد الحسابات: ${accounts.length.toLocaleString()}
+• الحسابات النشطة: ${activeAccounts.toLocaleString()}
+• متوسط الرصيد: ${Math.round(totalGold / accounts.length)} ${config.currency}`;
   }
 
   async handleArchive(userId, command) {
@@ -646,7 +840,12 @@ class BankSystem {
       return `❌ الحساب ${code} غير موجود`;
     }
     
-    return `💰 رصيد الحساب:\n\nالكود: ${account.code}\nالاسم: ${account.username}\nالرصيد: ${account.balance} ${config.currency}\nالحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
+    return `💰 رصيد الحساب:
+
+الكود: ${account.code}
+الاسم: ${account.username}
+الرصيد: ${account.balance} ${config.currency}
+الحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
   }
 
   // عرض رصيدي (للمستخدم العادي)
@@ -655,7 +854,7 @@ class BankSystem {
     const account = await this.db.getAccountInfo(userId);
     
     if (!account) {
-      return `❌ ليس لديك حساب نشط.\n\n📞 للتواصل مع المسؤول لإنشاء حساب، اكتب: \`تواصل\``;
+      return `❌ ليس لديك حساب نشط.\n\n📞 للتواصل مع المسؤول لإنشاء حساب، اكتب: تواصل`;
     }
     
     return `💰 رصيدك: ${account.balance} ${config.currency}`;
@@ -666,10 +865,15 @@ class BankSystem {
     const account = await this.db.getAccountInfo(userId);
     
     if (!account) {
-      return `❌ ليس لديك حساب نشط.\n\n📞 للتواصل مع المسؤول لإنشاء حساب، اكتب: \`تواصل\``;
+      return `❌ ليس لديك حساب نشط.\n\n📞 للتواصل مع المسؤول لإنشاء حساب، اكتب: تواصل`;
     }
     
-    return `📋 **معلومات حسابك:**\n\n👤 الاسم: ${account.username}\n🆔 الكود: ${account.code}\n💰 الرصيد: ${account.balance} ${config.currency}\n📅 الحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
+    return `📋 معلومات حسابك:
+
+👤 الاسم: ${account.username}
+🆔 الكود: ${account.code}
+💰 الرصيد: ${account.balance} ${config.currency}
+📅 الحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
   }
 
   async handleGetId(userId) {
@@ -696,58 +900,110 @@ class BankSystem {
     const account = archiveData.accounts.find(acc => acc.code === code);
     if (!account) return null;
     
-    return `💰 رصيد الحساب:\n\nالكود: ${account.code}\nالاسم: ${account.username}\nالرصيد: ${account.balance} ${config.currency}\nالمصدر: الأرشيف ${archiveKey}`;
+    return `💰 رصيد الحساب:
+
+الكود: ${account.code}
+الاسم: ${account.username}
+الرصيد: ${account.balance} ${config.currency}
+المصدر: الأرشيف ${archiveKey}`;
   }
 
   async handleHelp(userId) {
     const isAdmin = this.isAdmin(userId);
     const isSuperAdmin = this.isSuperAdmin(userId);
+    const adminType = this.admins.get(userId);
     
-    let helpText = `🏦 **أوامر بنك GOLD - المساعدة**\n\n`;
+    let helpText = `🏦 أوامر بنك GOLD - المساعدة
+
+`;
     
     if (isAdmin) {
-      helpText += `⚡ **أوامر التحكم بالنظام:**\n`;
-      helpText += `• \`تشغيل البوت\` / \`ايقاف البوت\` - تشغيل/إيقاف البوت\n`;
-      helpText += `• \`تشغيل الانشاء\` / \`ايقاف الانشاء\` - السماح/منع إنشاء حسابات\n`;
-      helpText += `• \`تشغيل التحويلات\` / \`ايقاف التحويلات\` - السماح/منع التحويلات\n`;
-      helpText += `• \`ايقاف الصيانة\` / \`تشغيل الصيانة\` - تفعيل/إلغاء وضع الصيانة\n`;
-      helpText += `• \`تشغيل الاوقات\` / \`ايقاف الاوقات\` - تفعيل/إلغاء أوقات العمل\n`;
-      helpText += `• \`حالة النظام\` - عرض حالة النظام المفصلة\n\n`;
+      helpText += `⚡ أوامر التحكم بالنظام:
+• تشغيل البوت / ايقاف البوت - تشغيل/إيقاف البوت
+• تشغيل الانشاء / ايقاف الانشاء - السماح/منع إنشاء حسابات
+• تشغيل التحويلات / ايقاف التحويلات - السماح/منع التحويلات
+• ايقاف الصيانة / تشغيل الصيانة - تفعيل/إلغاء وضع الصيانة
+• تشغيل الاوقات / ايقاف الاوقات - تفعيل/إلغاء أوقات العمل
+• حالة النظام - عرض حالة النظام المفصلة
+
+`;
       
-      helpText += `🔧 **أوامر الإدارة:**\n`;
-      helpText += `• \`انشاء [الاسم] [كلمة السر]\` - إنشاء حساب جديد\n`;
-      helpText += `• \`حظر [الكود]\` - حظر حساب\n`;
-      helpText += `• \`فك حظر [الكود]\` - فك حظر حساب\n`;
-      helpText += `• \`مجموع\` - إجمالي الغولد\n`;
-      helpText += `• \`خصم [المبلغ] [الكود]\` - خصم غولد\n`;
-      helpText += `• \`اضافة [المبلغ] [الكود]\` - إضافة غولد\n`;
-      helpText += `• \`تعديل [الكود] [الرصيد]\` - تعديل الرصيد مباشرة\n`;
-      helpText += `• \`ربط [الكود] [المعرف] [كلمة السر]\` - ربط حساب\n`;
-      helpText += `• \`رصيد [الكود]\` - استعلام عن رصيد حساب\n`;
-      helpText += `• \`ارشيف [A/B][رقم]\` - عرض الأرشيفات\n\n`;
+      helpText += `🔧 الأوامر المتاحة لك (${adminType}):
+`;
+      
+      if (this.hasPermission(userId, 'انشاء')) {
+        helpText += `• انشاء [الاسم] [كلمة السر] - إنشاء حساب جديد\n`;
+      }
+      if (this.hasPermission(userId, 'ربط')) {
+        helpText += `• ربط [الكود] [المعرف] [كلمة السر] - ربط حساب\n`;
+      }
+      if (this.hasPermission(userId, 'تحويل')) {
+        helpText += `• تحويل [المبلغ] [الكود] - تحويل غولد\n`;
+      }
+      if (this.hasPermission(userId, 'رصيد')) {
+        helpText += `• رصيد [الكود] - استعلام عن رصيد حساب\n`;
+      }
+      if (this.hasPermission(userId, 'ارشيف')) {
+        helpText += `• ارشيف [A/B][رقم] - عرض الأرشيفات\n`;
+      }
+      if (this.hasPermission(userId, 'خصم')) {
+        helpText += `• خصم [المبلغ] [الكود] - خصم غولد\n`;
+      }
+      if (this.hasPermission(userId, 'اضافة')) {
+        helpText += `• اضافة [المبلغ] [الكود] - إضافة غولد\n`;
+      }
+      if (this.hasPermission(userId, 'تعديل')) {
+        helpText += `• تعديل [الكود] [الرصيد] - تعديل الرصيد مباشرة\n`;
+      }
+      if (this.hasPermission(userId, 'حظر')) {
+        helpText += `• حظر [الكود] - حظر حساب\n`;
+      }
+      if (this.hasPermission(userId, 'فك حظر')) {
+        helpText += `• فك حظر [الكود] - فك حظر حساب\n`;
+      }
+      if (this.hasPermission(userId, 'محظورين')) {
+        helpText += `• محظورين - عرض قائمة المحظورين\n`;
+      }
+      
+      helpText += `\n`;
       
       if (isSuperAdmin) {
-        helpText += `👑 **أوامر المدير الأساسي:**\n`;
-        helpText += `• \`اضف مشرف [المعرف]\` - إضافة مشرف جديد\n`;
-        helpText += `• \`احذف مشرف [المعرف]\` - حذف مشرف\n\n`;
+        helpText += `👑 أوامر المدير الأساسي:
+• مجموع - إجمالي الغولد
+• توب - أعلى 10 حسابات
+• اجمالي / الكل - إجمالي الغولد في الأرشيفات
+• اضف مشرف [المعرف] [النوع] - إضافة مشرف جديد
+• احذف مشرف [المعرف] - حذف مشرف
+
+`;
       }
     } else {
-      helpText += `👤 **أوامر المستخدم:**\n`;
-      helpText += `• \`تسجيل [الكود] [كلمة السر]\` - تسجيل الدخول\n`;
-      helpText += `• \`رصيدي\` - عرض رصيدك\n`;
-      helpText += `• \`حالتي\` - عرض معلومات حسابك\n`;
-      helpText += `• \`تحويل [المبلغ] [الكود]\` - تحويل غولد\n`;
-      helpText += `• \`معرفي\` - عرض معرفك\n`;
-      helpText += `• \`حالة النظام\` - عرض حالة النظام\n`;
-      helpText += `• \`تسجيل خروج\` - تسجيل الخروج\n`;
-      helpText += `• \`تواصل\` - التواصل مع المسؤول\n`;
-      helpText += `• \`مساعدة\` - عرض هذه الرسالة\n\n`;
+      helpText += `👤 أوامر المستخدم:
+• تسجيل [الكود] [كلمة السر] - تسجيل الدخول
+• رصيدي - عرض رصيدك
+• حالتي - عرض معلومات حسابك
+• تحويل [المبلغ] [الكود] - تحويل غولد
+• معرفي - عرض معرفك
+• حالة النظام - عرض حالة النظام
+• تسجيل خروج - تسجيل الخروج
+• تواصل - التواصل مع المسؤول
+• مساعدة - عرض هذه الرسالة
+
+`;
     }
     
-    helpText += `📋 **معلومات النظام:**\n`;
-    helpText += `• الرصيد الابتدائي: 15 ${config.currency}\n`;
-    helpText += `• السلسلة الحالية: ${this.currentLetter}\n`;
-    helpText += `• التالي: ${this.getNextCode()}`;
+    // إضافة معلومات النظام للمشرفين فقط
+    if (isAdmin) {
+      const accounts = await this.db.getAllAccounts();
+      const totalGold = accounts.reduce((sum, acc) => sum + acc.balance, 0);
+      
+      helpText += `📊 معلومات النظام:
+• الرصيد الابتدائي: 15 ${config.currency}
+• إجمالي الحسابات: ${accounts.length}
+• إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
+• السلسلة الحالية: ${this.currentLetter}
+• التالي: ${this.getNextCode()}`;
+    }
     
     return helpText;
   }
@@ -763,7 +1019,7 @@ class BankSystem {
   }
 
   getUnknownCommandResponse(command) {
-    return `❌ الأمر "${command}" غير معروف!\n\n🔍 اكتب \`مساعدة\` لعرض جميع الأوامر المتاحة.\n\n💡 تلميح: تأكد من كتابة الأمر بشكل صحيح.`;
+    return `❌ الأمر "${command}" غير معروف!\n\n🔍 اكتب مساعدة لعرض جميع الأوامر المتاحة.\n\n💡 تلميح: تأكد من كتابة الأمر بشكل صحيح.`;
   }
 
   formatArchiveDisplay(archiveData) {
