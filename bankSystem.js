@@ -12,6 +12,11 @@ class BankSystem {
     this.loginSessions = new Map();
   }
 
+  // دالة مساعدة للتحقق من المدير
+  isAdmin(userId) {
+    return userId === config.adminUserId;
+  }
+
   getNextCode() {
     this.currentNumber += 1;
     
@@ -26,7 +31,7 @@ class BankSystem {
   // التحقق من حالة النظام قبل معالجة أي أمر
   async processCommand(userId, message) {
     // التحقق من حالة البوت العامة
-    if (!config.systemSettings.botEnabled) {
+    if (!config.systemSettings.botEnabled && !this.isAdmin(userId)) {
       return config.systemSettings.maintenanceMode ? 
         config.systemSettings.maintenanceMessage : 
         "⏸️ البوت متوقف حاليًا. الرجاء المحاولة لاحقاً.";
@@ -34,20 +39,28 @@ class BankSystem {
 
     // التحقق من أوقات العمل
     const timeCheck = this.checkWorkingHours();
-    if (!timeCheck.withinHours) {
+    if (!timeCheck.withinHours && !this.isAdmin(userId)) {
       return timeCheck.message;
     }
 
     // التحقق من وضع الصيانة
-    if (config.systemSettings.maintenanceMode && userId !== config.adminUserId) {
+    if (config.systemSettings.maintenanceMode && !this.isAdmin(userId)) {
       return config.systemSettings.maintenanceMessage;
     }
 
     const command = message.trim().toLowerCase();
     
+    // الأوامر المسموحة بدون تسجيل دخول
+    const publicCommands = ['معرفي', 'مساعدة', 'اوامر', 'تسجيل', 'استعادة', 'انشاء'];
+    const isPublicCommand = publicCommands.some(cmd => command.startsWith(cmd) || command === cmd);
+    
+    if (isPublicCommand) {
+      return await this.handlePublicCommand(userId, command);
+    }
+    
     // التحقق إذا كان المستخدم مسجل الدخول
     if (!this.loginSessions.has(userId)) {
-      return await this.handleFirstTimeUser(userId, command);
+      return this.getWelcomeMessage();
     }
     
     // إذا كان مسجل الدخول، نعالج الأوامر العادية
@@ -108,6 +121,34 @@ class BankSystem {
       }
       
     } catch (error) {
+      console.error('❌ خطأ في معالجة الأمر:', error);
+      return `❌ حدث خطأ: ${error.message}`;
+    }
+  }
+
+  // معالجة الأوامر العامة (بدون تسجيل دخول)
+  async handlePublicCommand(userId, command) {
+    try {
+      if (command === 'معرفي') {
+        return await this.handleGetId(userId);
+      }
+      else if (command === 'مساعدة' || command === 'اوامر') {
+        return await this.handleHelp(userId);
+      }
+      else if (command.startsWith('تسجيل')) {
+        return await this.handleLogin(userId, command);
+      }
+      else if (command.startsWith('استعادة')) {
+        return await this.handleRecover(userId, command);
+      }
+      else if (command.startsWith('انشاء')) {
+        return await this.handleCreateWithPassword(userId, command);
+      }
+      else {
+        return this.getWelcomeMessage();
+      }
+    } catch (error) {
+      console.error('❌ خطأ في معالجة الأمر العام:', error);
       return `❌ حدث خطأ: ${error.message}`;
     }
   }
@@ -138,35 +179,21 @@ class BankSystem {
     return { withinHours: true, message: "" };
   }
 
-  // معالجة المستخدم لأول مرة
-  async handleFirstTimeUser(userId, command) {
-    if (command.startsWith('تسجيل')) {
-      return await this.handleLogin(userId, command);
-    }
-    else if (command.startsWith('استعادة')) {
-      return await this.handleRecover(userId, command);
-    }
-    else if (command.startsWith('انشاء')) {
-      return await this.handleCreateWithPassword(userId, command);
-    }
-    else {
-      return this.getWelcomeMessage();
-    }
-  }
-
   // رسالة ترحيب للمستخدمين الجدد
   getWelcomeMessage() {
     return `🏦 **مرحباً في بنك GOLD**\n\n` +
            `📋 **اختر أحد الخيارات:**\n` +
            `• \`انشاء [الاسم] [كلمة السر]\` - إنشاء حساب جديد\n` +
            `• \`تسجيل [الكود] [كلمة السر]\` - تسجيل الدخول\n` +
-           `• \`استعادة [الكود] [كلمة السر]\` - استعادة حساب\n\n` +
+           `• \`استعادة [الكود] [كلمة السر]\` - استعادة حساب\n` +
+           `• \`معرفي\` - عرض معرفك\n` +
+           `• \`مساعدة\` - عرض الأوامر المتاحة\n\n` +
            `🔒 **لأمان حسابك، يجب استخدام كلمة سر قوية**`;
   }
 
   // إنشاء حساب بكلمة سر
   async handleCreateWithPassword(userId, command) {
-    if (!config.systemSettings.createAccounts) {
+    if (!config.systemSettings.createAccounts && !this.isAdmin(userId)) {
       return "⏸️ إنشاء الحسابات الجديدة متوقف حاليًا. الرجاء المحاولة لاحقاً.";
     }
 
@@ -256,7 +283,7 @@ class BankSystem {
 
   // ربط حساب (للمشرف فقط)
   async handleLinkAccount(userId, command) {
-    if (userId !== config.adminUserId) {
+    if (!this.isAdmin(userId)) {
       return `❌ هذا الأمر للمشرف فقط`;
     }
     
@@ -275,7 +302,7 @@ class BankSystem {
 
   // تعديل الرصيد (للمشرف فقط)
   async handleModifyBalance(userId, command) {
-    if (userId !== config.adminUserId) {
+    if (!this.isAdmin(userId)) {
       return `❌ هذا الأمر للمشرف فقط`;
     }
     
@@ -293,7 +320,7 @@ class BankSystem {
 
   // التحكم في النظام (للمشرف فقط)
   async handleSystemControl(userId, command) {
-    if (userId !== config.adminUserId) {
+    if (!this.isAdmin(userId)) {
       return `❌ هذا الأمر للمشرف فقط`;
     }
 
@@ -373,7 +400,7 @@ class BankSystem {
   }
 
   async handleCreate(userId, command) {
-    if (!config.systemSettings.createAccounts) {
+    if (!config.systemSettings.createAccounts && !this.isAdmin(userId)) {
       return "⏸️ إنشاء الحسابات الجديدة متوقف حاليًا. الرجاء المحاولة لاحقاً.";
     }
     
@@ -397,7 +424,7 @@ class BankSystem {
   }
 
   async handleTransfer(userId, command) {
-    if (!config.systemSettings.transfers) {
+    if (!config.systemSettings.transfers && !this.isAdmin(userId)) {
       return "⏸️ التحويلات متوقفة حاليًا. الرجاء المحاولة لاحقاً.";
     }
     
@@ -418,7 +445,7 @@ class BankSystem {
   }
 
   async handleBan(userId, command) {
-    if (userId !== config.adminUserId) {
+    if (!this.isAdmin(userId)) {
       return `❌ هذا الأمر للمشرف فقط`;
     }
     
@@ -433,7 +460,7 @@ class BankSystem {
   }
 
   async handleTotal(userId) {
-    if (userId !== config.adminUserId) {
+    if (!this.isAdmin(userId)) {
       return `❌ هذا الأمر للمشرف فقط`;
     }
     
@@ -451,7 +478,7 @@ class BankSystem {
 
   async handleArchive(userId, command) {
     // الأرشيف للمشرف فقط
-    if (userId !== config.adminUserId) {
+    if (!this.isAdmin(userId)) {
       return `❌ هذا الأمر للمشرف فقط`;
     }
     
@@ -482,7 +509,7 @@ class BankSystem {
   }
 
   async handleDeduct(userId, command) {
-    if (userId !== config.adminUserId) {
+    if (!this.isAdmin(userId)) {
       return `❌ هذا الأمر للمشرف فقط`;
     }
     
@@ -501,7 +528,7 @@ class BankSystem {
 
   // أمر إضافة رصيد (للمشرف فقط)
   async handleAddBalance(userId, command) {
-    if (userId !== config.adminUserId) {
+    if (!this.isAdmin(userId)) {
       return `❌ هذا الأمر للمشرف فقط`;
     }
     
@@ -520,7 +547,7 @@ class BankSystem {
 
   // عرض رصيد حساب (للمشرف فقط)
   async handleBalance(userId, command) {
-    if (userId !== config.adminUserId) {
+    if (!this.isAdmin(userId)) {
       return `❌ هذا الأمر للمشرف فقط`;
     }
     
@@ -569,6 +596,10 @@ class BankSystem {
     return `📋 **معلومات حسابك:**\n\n👤 الاسم: ${account.username}\n🆔 الكود: ${account.code}\n💰 الرصيد: ${account.balance} ${config.currency}\n📅 الحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
   }
 
+  async handleGetId(userId) {
+    return `🆔 معرفك هو: ${userId}`;
+  }
+
   searchInArchives(code) {
     const series = code[0].toUpperCase();
     const number = parseInt(code.slice(1, 4));
@@ -592,12 +623,8 @@ class BankSystem {
     return `💰 رصيد الحساب:\n\nالكود: ${account.code}\nالاسم: ${account.username}\nالرصيد: ${account.balance} ${config.currency}\nالمصدر: الأرشيف ${archiveKey}`;
   }
 
-  async handleGetId(userId) {
-    return `🆔 معرفك هو: ${userId}`;
-  }
-
   async handleHelp(userId) {
-    const isAdmin = userId === config.adminUserId;
+    const isAdmin = this.isAdmin(userId);
     
     let helpText = `🏦 **أوامر بنك GOLD - المساعدة**\n\n`;
     
@@ -677,7 +704,7 @@ class BankSystem {
   }
 
   async createAccount(userId, username, password = null, customCode = null) {
-    let code = customCode || this.getNextCode();
+    let code = customCode || generateUserCode();
     const passwordHash = password ? hashPassword(password) : hashPassword('default123');
     
     try {
@@ -722,7 +749,7 @@ class BankSystem {
   }
 
   async banAccount(adminId, code) {
-    if (adminId !== config.adminUserId) {
+    if (!this.isAdmin(adminId)) {
       return [false, "غير مصرح لك"];
     }
     
@@ -742,7 +769,7 @@ class BankSystem {
   }
 
   async adminDeductBalance(adminId, code, amount, reason = '') {
-    if (adminId !== config.adminUserId) {
+    if (!this.isAdmin(adminId)) {
       return [false, "غير مصرح لك"];
     }
     
@@ -773,7 +800,7 @@ class BankSystem {
 
   // دالة إضافة الرصيد في النظام
   async adminAddBalance(adminId, code, amount, reason = '') {
-    if (adminId !== config.adminUserId) {
+    if (!this.isAdmin(adminId)) {
       return [false, "غير مصرح لك"];
     }
     
