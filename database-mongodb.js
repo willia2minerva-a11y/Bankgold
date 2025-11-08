@@ -4,10 +4,36 @@ const Account = require('./models/Account');
 
 class MongoDBDatabase {
   constructor() {
-    // لا حاجة للتهيئة، mongoose يتولى ذلك
+    this.isConnected = false;
+    this.connect();
+  }
+
+  async connect() {
+    try {
+      if (mongoose.connection.readyState === 0) {
+        await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/bankgold', {
+          useNewUrlParser: true,
+          useUnifiedTopology: true,
+          serverSelectionTimeoutMS: 5000,
+          socketTimeoutMS: 45000,
+        });
+        this.isConnected = true;
+        console.log('✅ تم الاتصال بقاعدة البيانات MongoDB');
+      }
+    } catch (error) {
+      console.error('❌ خطأ في الاتصال بقاعدة البيانات:', error);
+      this.isConnected = false;
+    }
+  }
+
+  async ensureConnection() {
+    if (!this.isConnected) {
+      await this.connect();
+    }
   }
 
   async createAccount(userId, code, username, password, balance) {
+    await this.ensureConnection();
     try {
       // إنشاء الحساب في مجموعة الحسابات المنفردة فقط
       const account = new Account({
@@ -32,72 +58,84 @@ class MongoDBDatabase {
   }
 
   async getAccountByCode(code) {
+    await this.ensureConnection();
     try {
       const account = await Account.findOne({ code });
       return account ? account.toObject() : null;
     } catch (error) {
       console.error('❌ خطأ في البحث عن الحساب:', error);
-      throw error;
+      return null;
     }
   }
 
   async getAccountInfo(userId) {
+    await this.ensureConnection();
     try {
       const account = await Account.findOne({ user_id: userId, status: 'active' });
       return account ? account.toObject() : null;
     } catch (error) {
       console.error('❌ خطأ في الحصول على معلومات الحساب:', error);
-      throw error;
+      return null;
     }
   }
 
   async getAllAccounts() {
+    await this.ensureConnection();
     try {
       const accounts = await Account.find({});
       return accounts.map(acc => acc.toObject());
     } catch (error) {
       console.error('❌ خطأ في الحصول على جميع الحسابات:', error);
-      throw error;
+      return [];
     }
   }
 
   async transferMoney(fromUser, toUser, toCode, amount) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
+    await this.ensureConnection();
+    
+    // استخدام المعاملات إذا كان الاتصال نشطاً
+    if (this.isConnected) {
+      const session = await mongoose.startSession();
+      session.startTransaction();
 
-    try {
-      const fromAccount = await Account.findOne({ user_id: fromUser }).session(session);
-      const toAccount = await Account.findOne({ user_id: toUser }).session(session);
+      try {
+        const fromAccount = await Account.findOne({ user_id: fromUser }).session(session);
+        const toAccount = await Account.findOne({ user_id: toUser }).session(session);
 
-      if (!fromAccount || !toAccount) {
-        throw new Error('الحساب غير موجود');
+        if (!fromAccount || !toAccount) {
+          throw new Error('الحساب غير موجود');
+        }
+
+        if (fromAccount.balance < amount) {
+          throw new Error('رصيد غير كافٍ');
+        }
+
+        // خصم المبلغ من المرسل
+        fromAccount.balance -= amount;
+        await fromAccount.save({ session });
+
+        // إضافة المبلغ للمستلم
+        toAccount.balance += amount;
+        await toAccount.save({ session });
+
+        await session.commitTransaction();
+        console.log(`✅ تم التحويل: ${amount} من ${fromAccount.code} إلى ${toAccount.code}`);
+        return true;
+      } catch (error) {
+        await session.abortTransaction();
+        console.error('❌ خطأ في التحويل:', error);
+        throw error;
+      } finally {
+        session.endSession();
       }
-
-      if (fromAccount.balance < amount) {
-        throw new Error('رصيد غير كافٍ');
-      }
-
-      // خصم المبلغ من المرسل
-      fromAccount.balance -= amount;
-      await fromAccount.save({ session });
-
-      // إضافة المبلغ للمستلم
-      toAccount.balance += amount;
-      await toAccount.save({ session });
-
-      await session.commitTransaction();
-      console.log(`✅ تم التحويل: ${amount} من ${fromAccount.code} إلى ${toAccount.code}`);
-      return true;
-    } catch (error) {
-      await session.abortTransaction();
-      console.error('❌ خطأ في التحويل:', error);
-      throw error;
-    } finally {
-      session.endSession();
+    } else {
+      // السيناريو البديل بدون معاملات (لحالات فشل الاتصال)
+      throw new Error('الاتصال بقاعدة البيانات غير متاح');
     }
   }
 
   async updateBalance(userId, newBalance) {
+    await this.ensureConnection();
     try {
       await Account.findOneAndUpdate(
         { user_id: userId },
@@ -112,6 +150,7 @@ class MongoDBDatabase {
   }
 
   async updateAccountStatus(userId, status) {
+    await this.ensureConnection();
     try {
       await Account.findOneAndUpdate(
         { user_id: userId },
@@ -126,6 +165,7 @@ class MongoDBDatabase {
   }
 
   async updateUserId(oldUserId, newUserId) {
+    await this.ensureConnection();
     try {
       await Account.findOneAndUpdate(
         { user_id: oldUserId },
@@ -140,6 +180,7 @@ class MongoDBDatabase {
   }
 
   async updateAccountPassword(userId, passwordHash) {
+    await this.ensureConnection();
     try {
       await Account.findOneAndUpdate(
         { user_id: userId },
@@ -154,6 +195,7 @@ class MongoDBDatabase {
   }
 
   async updateLastLogin(userId) {
+    await this.ensureConnection();
     try {
       await Account.findOneAndUpdate(
         { user_id: userId },
