@@ -10,7 +10,91 @@ class BankSystem {
     this.currentLetter = config.currentLetter;
     this.currentNumber = config.currentNumber;
     this.loginSessions = new Map();
-    this.admins = new Map([[config.adminUserId, 'عام']]); // المدير الأساسي + المشرفين المضافين
+    this.admins = new Map([[config.adminUserId, 'عام']]);
+    
+    // تحميل جميع الحسابات من الأرشيفات إلى الذاكرة
+    this.loadAllArchives();
+  }
+
+  // تحميل جميع الحسابات من الأرشيفات
+  async loadAllArchives() {
+    try {
+      console.log('🔄 جاري تحميل الأرشيفات...');
+      this.allAccounts = new Map();
+      
+      // تحميل الأرشيفات من السلسلة A
+      const archivesA = await Archive.find({ series: 'A' });
+      for (const archive of archivesA) {
+        for (const account of archive.accounts) {
+          this.allAccounts.set(account.code, {
+            ...account,
+            source: 'archive',
+            archive_ref: `A${archive.number}`
+          });
+        }
+      }
+      
+      // تحميل الأرشيفات من السلسلة B
+      const archivesB = await Archive.find({ series: 'B' });
+      for (const archive of archivesB) {
+        for (const account of archive.accounts) {
+          this.allAccounts.set(account.code, {
+            ...account,
+            source: 'archive',
+            archive_ref: `B${archive.number}`
+          });
+        }
+      }
+      
+      console.log(`✅ تم تحميل ${this.allAccounts.size} حساب من الأرشيفات`);
+    } catch (error) {
+      console.error('❌ خطأ في تحميل الأرشيفات:', error);
+      this.allAccounts = new Map();
+    }
+  }
+
+  // البحث عن حساب في الأرشيفات أو قاعدة البيانات
+  async findAccount(code) {
+    const upperCode = code.toUpperCase();
+    
+    // البحث أولاً في قاعدة البيانات (الحسابات المنشأة حديثاً)
+    const dbAccount = await this.db.getAccountByCode(upperCode);
+    if (dbAccount) {
+      return { ...dbAccount, source: 'database' };
+    }
+    
+    // إذا لم يوجد في قاعدة البيانات، ابحث في الأرشيفات
+    if (this.allAccounts.has(upperCode)) {
+      return this.allAccounts.get(upperCode);
+    }
+    
+    return null;
+  }
+
+  // الحصول على جميع الحسابات (من الأرشيفات وقاعدة البيانات)
+  async getAllAccounts() {
+    try {
+      const dbAccounts = await this.db.getAllAccounts();
+      const archiveAccounts = Array.from(this.allAccounts.values());
+      
+      // دمج الحسابات مع إعطاء الأولوية لقاعدة البيانات (في حالة وجود تكرار)
+      const allAccountsMap = new Map();
+      
+      // إضافة حسابات الأرشيفات أولاً
+      archiveAccounts.forEach(account => {
+        allAccountsMap.set(account.code, account);
+      });
+      
+      // إضافة/استبدال بحسابات قاعدة البيانات
+      dbAccounts.forEach(account => {
+        allAccountsMap.set(account.code, { ...account, source: 'database' });
+      });
+      
+      return Array.from(allAccountsMap.values());
+    } catch (error) {
+      console.error('❌ خطأ في جلب جميع الحسابات:', error);
+      return Array.from(this.allAccounts.values());
+    }
   }
 
   // دالة مساعدة للتحقق من المدير أو المشرف
@@ -143,7 +227,6 @@ class BankSystem {
         return await this.handleUnban(userId, command);
       }
       else if (command === 'مجموع') {
-        // مجموع للمدير الأساسي فقط
         if (!this.isSuperAdmin(userId)) return this.getPermissionDeniedMessage();
         return await this.handleTotal(userId);
       }
@@ -184,12 +267,10 @@ class BankSystem {
         return await this.handleGetId(userId);
       }
       else if (command === 'توب') {
-        // توب للمدير الأساسي فقط
         if (!this.isSuperAdmin(userId)) return this.getPermissionDeniedMessage();
         return await this.handleTopUsers(userId);
       }
       else if (command === 'اجمالي' || command === 'الكل') {
-        // اجمالي للمدير الأساسي فقط
         if (!this.isSuperAdmin(userId)) return this.getPermissionDeniedMessage();
         return await this.handleTotalGold(userId);
       }
@@ -265,9 +346,18 @@ class BankSystem {
     }
     
     try {
-      const account = await this.db.getAccountByCode(code);
+      const account = await this.findAccount(code);
       if (!account) {
         return `❌ الحساب ${code} غير موجود`;
+      }
+      
+      // إذا كان الحساب من الأرشيف، نحتاج إلى إنشاؤه في قاعدة البيانات أولاً
+      if (account.source === 'archive') {
+        const [success, response] = await this.createAccount(userId, account.username, newPassword, code);
+        if (!success) {
+          return response;
+        }
+        return `✅ تم إنشاء وتفعيل الحساب من الأرشيف!\nالكود: ${code}\nكلمة السر الجديدة: ${newPassword}`;
       }
       
       // التحقق من أن المستخدم هو صاحب الحساب أو مشرف
@@ -316,51 +406,17 @@ class BankSystem {
     return `🏦 مرحباً في بنك GOLD
 
 📋 الأوامر المتاحة:
-• تسجيل [الكود] [كلمة السر] - تسجيل الدخول
+• تسجيل [الكود] [كلمة السر] - تسجيل الدخول (لأي حساب في الأرشيفات)
 • رصيدي - عرض رصيدك
 • معرفي - عرض معرفك
 • تعديل كلمة السر [الكود] [كلمة السر الجديدة] - تعديل كلمة السر
-• تواصل - التواصل مع المسؤول لإنشاء حساب
+• تواصل - التواصل مع المسؤول
 • مساعدة - عرض الأوامر المتاحة
 
-🔒 لإنشاء حساب جديد، تواصل مع المسؤول`;
+🔒 النظام يدعم جميع الحسابات من الأرشيفات A و B`;
   }
 
-  // إنشاء حساب بكلمة سر (للمشرفين فقط)
-  async handleCreateWithPassword(userId, command) {
-    if (!this.isAdmin(userId)) {
-      return "❌ إنشاء الحسابات متاح للمشرفين فقط.\n\n📞 للتواصل مع المسؤول لإنشاء حساب، اكتب: تواصل";
-    }
-
-    const match = command.match(/انشاء\s+([^]+)\s+(\S+)/);
-    if (!match) {
-      return `❌ صيغة خاطئة! استخدم:\nانشاء [الاسم الكامل] [كلمة السر]\nمثال: انشاء كيم شيريونغ mypassword123`;
-    }
-    
-    const username = match[1].trim();
-    const password = match[2];
-    
-    if (password.length < 4) {
-      return `❌ كلمة السر يجب أن تكون 4 أحرف على الأقل`;
-    }
-    
-    const [success, response] = await this.createAccount(userId, username, password);
-    
-    if (success) {
-      return `✅ تم إنشاء الحساب بنجاح!
-
-📋 معلومات الحساب:
-الكود: ${response.account.code}
-الاسم: ${response.account.username}
-الرصيد: ${response.account.balance} ${config.currency}
-
-🔒 احفظ كودك وكلمة السر`;
-    } else {
-      return response;
-    }
-  }
-
-  // تسجيل الدخول
+  // تسجيل الدخول (يدعم الأرشيفات وقاعدة البيانات)
   async handleLogin(userId, command) {
     const match = command.match(/تسجيل\s+(\w+)\s+(\S+)/);
     if (!match) {
@@ -370,11 +426,38 @@ class BankSystem {
     const code = match[1].toUpperCase();
     const password = match[2];
     
-    const account = await this.db.getAccountByCode(code);
+    // البحث عن الحساب في الأرشيفات أو قاعدة البيانات
+    const account = await this.findAccount(code);
     if (!account) {
       return `❌ الكود غير صحيح!`;
     }
     
+    // إذا كان الحساب من الأرشيف، نتحقق من كلمة السر الافتراضية أو ننشئه
+    if (account.source === 'archive') {
+      // كلمة السر الافتراضية للأرشيفات
+      const defaultPassword = '123456';
+      if (password !== defaultPassword) {
+        return `❌ كلمة السر غير صحيحة! كلمة السر الافتراضية للأرشيفات هي: ${defaultPassword}`;
+      }
+      
+      // إنشاء الحساب في قاعدة البيانات إذا لم يكن موجوداً
+      const existingDbAccount = await this.db.getAccountByCode(code);
+      if (!existingDbAccount) {
+        const [success, response] = await this.createAccount(userId, account.username, defaultPassword, code);
+        if (!success) {
+          return `❌ فشل في تفعيل الحساب من الأرشيف: ${response}`;
+        }
+      }
+      
+      // تحديث معلومات الحساب
+      const updatedAccount = await this.db.getAccountByCode(code);
+      this.loginSessions.set(userId, true);
+      await this.db.updateLastLogin(updatedAccount.user_id);
+      
+      return `✅ تم تسجيل الدخول بنجاح!\nمرحباً بك ${account.username}\n\n💰 رصيدك: ${account.balance} ${config.currency}\n\n🔒 نوصي بتغيير كلمة السر باستخدام: تعديل كلمة السر ${code} [كلمة السر الجديدة]`;
+    }
+    
+    // إذا كان الحساب من قاعدة البيانات
     if (!verifyPassword(password, account.password)) {
       return `❌ كلمة السر غير صحيحة!`;
     }
@@ -387,39 +470,6 @@ class BankSystem {
     await this.db.updateLastLogin(account.user_id);
     
     return `✅ تم تسجيل الدخول بنجاح!\nمرحباً بعودتك ${account.username}\n\n💰 رصيدك: ${account.balance} ${config.currency}`;
-  }
-
-  // استعادة حساب
-  async handleRecover(userId, command) {
-    const match = command.match(/استعادة\s+(\w+)\s+(\S+)/);
-    if (!match) {
-      return `❌ صيغة خاطئة! استخدم:\nاستعادة [الكود] [كلمة السر]\nمثال: استعادة B700B mypassword123`;
-    }
-    
-    const code = match[1].toUpperCase();
-    const password = match[2];
-    
-    const account = await this.db.getAccountByCode(code);
-    if (!account) {
-      return `❌ الكود غير صحيح!`;
-    }
-    
-    if (!verifyPassword(password, account.password)) {
-      return `❌ كلمة السر غير صحيحة!`;
-    }
-    
-    // ربط الحساب القديم بالمستخدم الجديد
-    await this.db.updateUserId(account.user_id, userId);
-    this.loginSessions.set(userId, true);
-    await this.db.updateLastLogin(userId);
-    
-    return `✅ تم استعادة الحساب بنجاح!\nمرحباً بعودتك ${account.username}\n\n💰 رصيدك: ${account.balance} ${config.currency}`;
-  }
-
-  // تسجيل الخروج
-  async handleLogout(userId) {
-    this.loginSessions.delete(userId);
-    return `✅ تم تسجيل الخروج بنجاح!\n\n🔒 لاستخدام البوت مرة أخرى، اكتب:\nتسجيل [الكود] [كلمة السر]`;
   }
 
   // ربط حساب (للمشرف فقط)
@@ -530,15 +580,11 @@ class BankSystem {
   // عرض أعلى 10 مستخدمين (للمدير الأساسي فقط)
   async handleTopUsers(userId) {
     try {
-      const accounts = await this.db.getAllAccounts();
-      
-      if (!accounts || accounts.length === 0) {
-        return "📊 لا توجد حسابات نشطة لعرضها";
-      }
+      const allAccounts = await this.getAllAccounts();
       
       // تصفية الحسابات النشطة وترتيبها حسب الرصيد
-      const activeAccounts = accounts
-        .filter(acc => acc.balance > 0 && acc.status === 'active')
+      const activeAccounts = allAccounts
+        .filter(acc => acc.balance > 0 && acc.status !== 'banned')
         .sort((a, b) => b.balance - a.balance)
         .slice(0, 10);
       
@@ -550,7 +596,8 @@ class BankSystem {
       
       activeAccounts.forEach((account, index) => {
         const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "🔸";
-        topText += `${medal} ${account.code} - ${account.username}\n   💰 ${account.balance} ${config.currency}\n\n`;
+        const source = account.source === 'archive' ? ' (الأرشيف)' : '';
+        topText += `${medal} ${account.code} - ${account.username}${source}\n   💰 ${account.balance} ${config.currency}\n\n`;
       });
       
       const totalGold = activeAccounts.reduce((sum, acc) => sum + acc.balance, 0);
@@ -566,16 +613,12 @@ class BankSystem {
   // عرض إجمالي الغولد في الأرشيفات (للمدير الأساسي فقط)
   async handleTotalGold(userId) {
     try {
-      const accounts = await this.db.getAllAccounts();
-      const totalGold = accounts.reduce((sum, acc) => sum + acc.balance, 0);
-      const totalAccounts = accounts.length;
+      const allAccounts = await this.getAllAccounts();
+      const totalGold = allAccounts.reduce((sum, acc) => sum + acc.balance, 0);
+      const totalAccounts = allAccounts.length;
       
-      // حساب الأرشيفات من الملفات
-      const archivesA = await Archive.find({ series: 'A' });
-      const archivesB = await Archive.find({ series: 'B' });
-      
-      const archiveACount = archivesA.reduce((sum, arch) => sum + arch.accounts.length, 0);
-      const archiveBCount = archivesB.reduce((sum, arch) => sum + arch.accounts.length, 0);
+      const archiveAccounts = allAccounts.filter(acc => acc.source === 'archive');
+      const databaseAccounts = allAccounts.filter(acc => acc.source === 'database');
       
       return `💰 إجمالي الغولد في النظام:
 
@@ -585,9 +628,9 @@ class BankSystem {
 • متوسط الرصيد: ${totalAccounts > 0 ? Math.round(totalGold / totalAccounts) : 0} ${config.currency}
 
 📁 المصادر:
-• الأرشيفات A: ${archiveACount} حساب
-• الأرشيفات B: ${archiveBCount} حساب  
-• الحسابات النشطة: ${accounts.length} حساب`;
+• الأرشيفات: ${archiveAccounts.length} حساب
+• قاعدة البيانات: ${databaseAccounts.length} حساب
+• الحسابات النشطة: ${allAccounts.filter(acc => acc.balance > 0).length} حساب`;
     } catch (error) {
       console.error('❌ خطأ في عرض الإجمالي:', error);
       return "❌ حدث خطأ في عرض الإجمالي";
@@ -597,8 +640,8 @@ class BankSystem {
   // عرض المحظورين
   async handleBannedUsers(userId) {
     try {
-      const accounts = await this.db.getAllAccounts();
-      const bannedAccounts = accounts.filter(acc => acc.status === 'banned');
+      const allAccounts = await this.getAllAccounts();
+      const bannedAccounts = allAccounts.filter(acc => acc.status === 'banned');
       
       if (bannedAccounts.length === 0) {
         return "✅ لا توجد حسابات محظورة حالياً";
@@ -693,12 +736,12 @@ class BankSystem {
     }
 
     try {
-      const accounts = await this.db.getAllAccounts();
-      const activeAccounts = accounts.filter(acc => acc.balance > 0).length;
-      const totalGold = accounts.reduce((sum, acc) => sum + acc.balance, 0);
+      const allAccounts = await this.getAllAccounts();
+      const activeAccounts = allAccounts.filter(acc => acc.balance > 0).length;
+      const totalGold = allAccounts.reduce((sum, acc) => sum + acc.balance, 0);
       
       statusText += `📊 الإحصائيات:
-• إجمالي الحسابات: ${accounts.length}
+• إجمالي الحسابات: ${allAccounts.length}
 • الحسابات النشطة: ${activeAccounts}
 • إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
 • السلسلة الحالية: ${this.currentLetter}
@@ -778,34 +821,33 @@ class BankSystem {
   }
 
   async handleTotal(userId) {
-    // مجموع للمدير الأساسي فقط
     if (!this.isSuperAdmin(userId)) {
       return `❌ هذا الأمر للمدير الأساسي فقط`;
     }
     
     try {
-      const accounts = await this.db.getAllAccounts();
+      const allAccounts = await this.getAllAccounts();
       
-      if (!accounts || accounts.length === 0) {
+      if (!allAccounts || allAccounts.length === 0) {
         return `📊 لا توجد حسابات في النظام بعد`;
       }
       
       let totalGold = 0;
       let activeAccounts = 0;
       
-      accounts.forEach(account => {
+      allAccounts.forEach(account => {
         totalGold += account.balance;
-        if (account.balance > 0 && account.status === 'active') {
+        if (account.balance > 0 && account.status !== 'banned') {
           activeAccounts++;
         }
       });
       
-      const averageBalance = accounts.length > 0 ? Math.round(totalGold / accounts.length) : 0;
+      const averageBalance = allAccounts.length > 0 ? Math.round(totalGold / allAccounts.length) : 0;
       
       return `💰 إحصائيات النظام:
 
 • إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
-• عدد الحسابات: ${accounts.length.toLocaleString()}
+• عدد الحسابات: ${allAccounts.length.toLocaleString()}
 • الحسابات النشطة: ${activeAccounts.toLocaleString()}
 • متوسط الرصيد: ${averageBalance} ${config.currency}`;
     } catch (error) {
@@ -815,12 +857,10 @@ class BankSystem {
   }
 
   async handleArchive(userId, command) {
-    // الأرشيف للمشرفين فقط
     if (!this.isAdmin(userId)) {
       return `❌ هذا الأمر للمشرفين فقط`;
     }
     
-    // تحسين التعبير النمطي ليقبل جميع الأشكال
     const match = command.match(/ارشيف\s+([AB])\s*(\d+)/i) || 
                   command.match(/ارشيف\s+([AB])(\d+)/i);
     
@@ -901,21 +941,23 @@ class BankSystem {
     
     const code = match[1].toUpperCase();
     
-    // البحث في قاعدة البيانات
     try {
-      const account = await this.db.getAccountByCode(code);
+      const account = await this.findAccount(code);
       
       if (!account) {
         return `❌ الحساب ${code} غير موجود`;
       }
+      
+      const sourceText = account.source === 'archive' ? 'الأرشيف' : 'قاعدة البيانات';
+      const statusText = account.status === 'active' ? '🟢 نشط' : '🔴 محظور';
       
       return `💰 رصيد الحساب:
 
 الكود: ${account.code}
 الاسم: ${account.username}
 الرصيد: ${account.balance} ${config.currency}
-الحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}
-المصدر: ${account.source === 'archive' ? 'الأرشيف' : 'حساب جديد'}`;
+الحالة: ${statusText}
+المصدر: ${sourceText}`;
     } catch (error) {
       console.error('خطأ في عرض الرصيد:', error);
       return `❌ حدث خطأ في عرض رصيد الحساب`;
@@ -928,7 +970,7 @@ class BankSystem {
     const account = await this.db.getAccountInfo(userId);
     
     if (!account) {
-      return `❌ ليس لديك حساب نشط.\n\n📞 للتواصل مع المسؤول لإنشاء حساب، اكتب: تواصل`;
+      return `❌ ليس لديك حساب نشط.\n\n💡 يمكنك تسجيل الدخول بأي حساب من الأرشيفات باستخدام:\nتسجيل [الكود] 123456\n\n📋 الأكواد المتاحة في الأرشيفات A و B`;
     }
     
     return `💰 رصيدك: ${account.balance} ${config.currency}`;
@@ -939,7 +981,7 @@ class BankSystem {
     const account = await this.db.getAccountInfo(userId);
     
     if (!account) {
-      return `❌ ليس لديك حساب نشط.\n\n📞 للتواصل مع المسؤول لإنشاء حساب، اكتب: تواصل`;
+      return `❌ ليس لديك حساب نشط.\n\n💡 يمكنك تسجيل الدخول بأي حساب من الأرشيفات باستخدام:\nتسجيل [الكود] 123456\n\n📋 الأكواد المتاحة في الأرشيفات A و B`;
     }
     
     return `📋 معلومات حسابك:
@@ -954,32 +996,15 @@ class BankSystem {
     return `🆔 معرفك هو: ${userId}`;
   }
 
-  async searchInArchives(code) {
-    try {
-      const account = await this.db.getAccountByCode(code);
-      if (!account) {
-        return null;
-      }
-
-      return `💰 رصيد الحساب:
-
-الكود: ${account.code}
-الاسم: ${account.username}
-الرصيد: ${account.balance} ${config.currency}
-المصدر: ${account.source === 'archive' ? 'الأرشيف' : 'حساب جديد'}
-الحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
-    } catch (error) {
-      console.error('خطأ في البحث في الأرشيفات:', error);
-      return null;
-    }
-  }
-
   async handleHelp(userId) {
     const isAdmin = this.isAdmin(userId);
     const isSuperAdmin = this.isSuperAdmin(userId);
     const adminType = this.admins.get(userId);
     
     let helpText = `🏦 أوامر بنك GOLD - المساعدة
+
+💡 النظام يدعم جميع الحسابات من الأرشيفات A و B
+🔐 كلمة السر الافتراضية للأرشيفات: 123456
 
 `;
     
@@ -1046,7 +1071,7 @@ class BankSystem {
       }
     } else {
       helpText += `👤 أوامر المستخدم:
-• تسجيل [الكود] [كلمة السر] - تسجيل الدخول
+• تسجيل [الكود] [123456] - تسجيل الدخول (لحسابات الأرشيفات)
 • رصيدي - عرض رصيدك
 • حالتي - عرض معلومات حسابك
 • تحويل [المبلغ] [الكود] - تحويل غولد
@@ -1063,12 +1088,12 @@ class BankSystem {
     // إضافة معلومات النظام للمشرفين فقط
     if (isAdmin) {
       try {
-        const accounts = await this.db.getAllAccounts();
-        const totalGold = accounts.reduce((sum, acc) => sum + acc.balance, 0);
+        const allAccounts = await this.getAllAccounts();
+        const totalGold = allAccounts.reduce((sum, acc) => sum + acc.balance, 0);
         
         helpText += `📊 معلومات النظام:
 • الرصيد الابتدائي: 15 ${config.currency}
-• إجمالي الحسابات: ${accounts.length}
+• إجمالي الحسابات: ${allAccounts.length}
 • إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
 • السلسلة الحالية: ${this.currentLetter}
 • التالي: ${this.getNextCode()}`;
@@ -1151,7 +1176,7 @@ class BankSystem {
       return [false, "❌ رصيد غير كافٍ"];
     }
     
-    const toAccount = await this.db.getAccountByCode(toCode);
+    const toAccount = await this.findAccount(toCode);
     if (!toAccount) {
       return [false, "❌ الحساب المستلم غير موجود"];
     }
@@ -1161,6 +1186,14 @@ class BankSystem {
     }
     
     try {
+      // إذا كان الحساب المستلم من الأرشيف، ننشئه في قاعدة البيانات أولاً
+      if (toAccount.source === 'archive') {
+        const [success, response] = await this.createAccount(null, toAccount.username, '123456', toCode);
+        if (!success) {
+          return [false, "❌ فشل في تفعيل الحساب المستلم من الأرشيف"];
+        }
+      }
+      
       await this.db.transferMoney(fromUser, toAccount.user_id, toCode, amount);
       const newBalance = fromAccount.balance - amount;
       
@@ -1175,12 +1208,20 @@ class BankSystem {
       return [false, "غير مصرح لك"];
     }
     
-    const account = await this.db.getAccountByCode(code);
+    const account = await this.findAccount(code);
     if (!account) {
       return [false, "❌ الحساب غير موجود"];
     }
     
     try {
+      // إذا كان الحساب من الأرشيف، ننشئه في قاعدة البيانات أولاً
+      if (account.source === 'archive') {
+        const [success, response] = await this.createAccount(null, account.username, '123456', code);
+        if (!success) {
+          return [false, "❌ فشل في تفعيل الحساب من الأرشيف للحظر"];
+        }
+      }
+      
       await this.db.updateAccountStatus(account.user_id, 'banned');
       config.blacklistedAccounts.push(code);
       
@@ -1195,7 +1236,7 @@ class BankSystem {
       return [false, "غير مصرح لك"];
     }
     
-    const account = await this.db.getAccountByCode(code);
+    const account = await this.findAccount(code);
     if (!account) {
       return [false, "❌ الحساب غير موجود"];
     }
@@ -1219,7 +1260,7 @@ class BankSystem {
       return [false, "غير مصرح لك"];
     }
     
-    const account = await this.db.getAccountByCode(code);
+    const account = await this.findAccount(code);
     if (!account) {
       return [false, "❌ الحساب غير موجود"];
     }
@@ -1235,6 +1276,14 @@ class BankSystem {
     
     const newBalance = currentBalance - amount;
     try {
+      // إذا كان الحساب من الأرشيف، ننشئه في قاعدة البيانات أولاً
+      if (account.source === 'archive') {
+        const [success, response] = await this.createAccount(null, account.username, '123456', code);
+        if (!success) {
+          return [false, "❌ فشل في تفعيل الحساب من الأرشيف للخصم"];
+        }
+      }
+      
       await this.db.updateBalance(account.user_id, newBalance);
       await this.db.logOperation('deduct', amount, null, code, 'خصم مباشر', adminId);
       
@@ -1250,7 +1299,7 @@ class BankSystem {
       return [false, "غير مصرح لك"];
     }
     
-    const account = await this.db.getAccountByCode(code);
+    const account = await this.findAccount(code);
     if (!account) {
       return [false, "❌ الحساب غير موجود"];
     }
@@ -1263,6 +1312,14 @@ class BankSystem {
     const newBalance = currentBalance + amount;
     
     try {
+      // إذا كان الحساب من الأرشيف، ننشئه في قاعدة البيانات أولاً
+      if (account.source === 'archive') {
+        const [success, response] = await this.createAccount(null, account.username, '123456', code);
+        if (!success) {
+          return [false, "❌ فشل في تفعيل الحساب من الأرشيف للإضافة"];
+        }
+      }
+      
       await this.db.updateBalance(account.user_id, newBalance);
       await this.db.logOperation('add', amount, null, code, 'إضافة مباشرة', adminId);
       
@@ -1274,7 +1331,7 @@ class BankSystem {
 
   // ربط حساب بمستخدم وكلمة سر
   async linkAccount(code, targetUserId, password) {
-    const account = await this.db.getAccountByCode(code);
+    const account = await this.findAccount(code);
     if (!account) {
       return [false, "❌ الحساب غير موجود"];
     }
@@ -1286,6 +1343,15 @@ class BankSystem {
     const passwordHash = hashPassword(password);
     
     try {
+      // إذا كان الحساب من الأرشيف، ننشئه في قاعدة البيانات أولاً
+      if (account.source === 'archive') {
+        const [success, response] = await this.createAccount(targetUserId, account.username, password, code);
+        if (!success) {
+          return [false, "❌ فشل في تفعيل الحساب من الأرشيف للربط"];
+        }
+        return [true, `✅ تم ربط الحساب بنجاح!\nالكود: ${code}\nالمعرف: ${targetUserId}`];
+      }
+      
       // البحث عن المستخدم الحالي المرتبط بهذا الكود وإلغاء ربطه
       const currentAccount = await this.db.getAccountByCode(code);
       if (currentAccount && currentAccount.user_id) {
@@ -1305,7 +1371,7 @@ class BankSystem {
 
   // تعديل الرصيد مباشرة
   async modifyBalance(code, newBalance) {
-    const account = await this.db.getAccountByCode(code);
+    const account = await this.findAccount(code);
     if (!account) {
       return [false, "❌ الحساب غير موجود"];
     }
@@ -1319,6 +1385,14 @@ class BankSystem {
     }
     
     try {
+      // إذا كان الحساب من الأرشيف، ننشئه في قاعدة البيانات أولاً
+      if (account.source === 'archive') {
+        const [success, response] = await this.createAccount(null, account.username, '123456', code);
+        if (!success) {
+          return [false, "❌ فشل في تفعيل الحساب من الأرشيف للتعديل"];
+        }
+      }
+      
       await this.db.updateBalance(account.user_id, newBalance);
       await this.db.logOperation('modify', newBalance - account.balance, null, code, 'تعديل مباشر', config.adminUserId);
       
