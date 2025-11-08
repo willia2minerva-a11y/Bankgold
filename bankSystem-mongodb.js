@@ -1,8 +1,8 @@
-const Database = require('./database');
+const Database = require('./database-mongodb');
 const config = require('./config');
-const archiveA = require('./archives/archiveA');
-const archiveB = require('./archives/archiveB');
 const { hashPassword, verifyPassword, generateUserCode } = require('./utils/security');
+const Archive = require('./models/Archive');
+const Account = require('./models/Account');
 
 class BankSystem {
   constructor() {
@@ -78,7 +78,7 @@ class BankSystem {
     const command = message.trim().toLowerCase();
     
     // الأوامر المسموحة بدون تسجيل دخول
-    const publicCommands = ['معرفي', 'مساعدة', 'اوامر', 'تسجيل', 'رصيدي', 'تواصل'];
+    const publicCommands = ['معرفي', 'مساعدة', 'اوامر', 'تسجيل', 'رصيدي', 'تواصل', 'تعديل كلمة السر'];
     const isPublicCommand = publicCommands.some(cmd => command.startsWith(cmd) || command === cmd);
     
     if (isPublicCommand) {
@@ -109,6 +109,9 @@ class BankSystem {
       }
       else if (command === 'تسجيل خروج') {
         return await this.handleLogout(userId);
+      }
+      else if (command.startsWith('تعديل كلمة السر')) {
+        return await this.handleChangePassword(userId, command);
       }
       else {
         return this.getUnknownCommandResponse(command);
@@ -200,6 +203,9 @@ class BankSystem {
       else if (command === 'حالة النظام') {
         return await this.handleSystemStatus(userId);
       }
+      else if (command.startsWith('تعديل كلمة السر')) {
+        return await this.handleChangePassword(userId, command);
+      }
       else {
         return this.getUnknownCommandResponse(command);
       }
@@ -232,12 +238,50 @@ class BankSystem {
       else if (command.startsWith('تواصل')) {
         return "📞 للتواصل مع المسؤول لإنشاء حساب:\nراسل: @المسؤول\nأو انتظر حتى يتم فتح إنشاء الحسابات";
       }
+      else if (command.startsWith('تعديل كلمة السر')) {
+        return await this.handleChangePassword(userId, command);
+      }
       else {
         return this.getWelcomeMessage();
       }
     } catch (error) {
       console.error('❌ خطأ في معالجة الأمر العام:', error);
       return `❌ حدث خطأ: ${error.message}`;
+    }
+  }
+
+  // أمر تعديل كلمة السر الجديد
+  async handleChangePassword(userId, command) {
+    const match = command.match(/تعديل كلمة السر\s+(\S+)\s+(\S+)/);
+    if (!match) {
+      return `❌ صيغة خاطئة! استخدم:\nتعديل كلمة السر [الكود] [كلمة السر الجديدة]\nمثال: تعديل كلمة السر B700B newpassword123`;
+    }
+    
+    const code = match[1].toUpperCase();
+    const newPassword = match[2];
+    
+    if (newPassword.length < 4) {
+      return `❌ كلمة السر يجب أن تكون 4 أحرف على الأقل`;
+    }
+    
+    try {
+      const account = await Account.findOne({ code });
+      if (!account) {
+        return `❌ الحساب ${code} غير موجود`;
+      }
+      
+      // التحقق من أن المستخدم هو صاحب الحساب أو مشرف
+      if (account.user_id !== userId && !this.isAdmin(userId)) {
+        return `❌ ليس لديك صلاحية لتعديل كلمة السر لهذا الحساب`;
+      }
+      
+      const passwordHash = hashPassword(newPassword);
+      await this.db.updateAccountPassword(account.user_id, passwordHash);
+      
+      return `✅ تم تعديل كلمة السر بنجاح!\nالحساب: ${code}\nكلمة السر الجديدة: ${newPassword}`;
+    } catch (error) {
+      console.error('خطأ في تعديل كلمة السر:', error);
+      return `❌ فشل في تعديل كلمة السر`;
     }
   }
 
@@ -275,6 +319,7 @@ class BankSystem {
 • تسجيل [الكود] [كلمة السر] - تسجيل الدخول
 • رصيدي - عرض رصيدك
 • معرفي - عرض معرفك
+• تعديل كلمة السر [الكود] [كلمة السر الجديدة] - تعديل كلمة السر
 • تواصل - التواصل مع المسؤول لإنشاء حساب
 • مساعدة - عرض الأوامر المتاحة
 
@@ -484,60 +529,47 @@ class BankSystem {
 
   // عرض أعلى 10 مستخدمين (للمدير الأساسي فقط)
   async handleTopUsers(userId) {
-    const accounts = await this.db.getAllAccounts();
-    
-    // ترتيب الحسابات حسب الرصيد (تنازلي)
-    const sortedAccounts = accounts
-      .filter(acc => acc.balance > 0)
-      .sort((a, b) => b.balance - a.balance)
-      .slice(0, 10);
-    
-    if (sortedAccounts.length === 0) {
-      return "📊 لا توجد حسابات نشطة لعرضها";
+    try {
+      const accounts = await Account.find({ balance: { $gt: 0 } })
+        .sort({ balance: -1 })
+        .limit(10);
+      
+      if (accounts.length === 0) {
+        return "📊 لا توجد حسابات نشطة لعرضها";
+      }
+      
+      let topText = "🏆 أعلى 10 حسابات حسب الرصيد:\n\n";
+      
+      accounts.forEach((account, index) => {
+        const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "🔸";
+        topText += `${medal} ${account.code} - ${account.username}\n   💰 ${account.balance} ${config.currency}\n\n`;
+      });
+      
+      const totalGold = accounts.reduce((sum, acc) => sum + acc.balance, 0);
+      topText += `---\nإجمالي أعلى 10: ${totalGold} ${config.currency}`;
+      
+      return topText;
+    } catch (error) {
+      console.error('خطأ في عرض التوب:', error);
+      return "❌ حدث خطأ في عرض أعلى الحسابات";
     }
-    
-    let topText = "🏆 أعلى 10 حسابات حسب الرصيد:\n\n";
-    
-    sortedAccounts.forEach((account, index) => {
-      const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "🔸";
-      topText += `${medal} ${account.code} - ${account.username}\n   💰 ${account.balance} ${config.currency}\n\n`;
-    });
-    
-    const totalGold = sortedAccounts.reduce((sum, acc) => sum + acc.balance, 0);
-    topText += `---\nإجمالي أعلى 10: ${totalGold} ${config.currency}`;
-    
-    return topText;
   }
 
   // عرض إجمالي الغولد في الأرشيفات (للمدير الأساسي فقط)
   async handleTotalGold(userId) {
-    let totalGold = 0;
-    let totalAccounts = 0;
-    
-    // حساب الأرشيفات A
-    Object.values(archiveA).forEach(archive => {
-      archive.accounts.forEach(account => {
-        totalGold += account.balance;
-        totalAccounts++;
-      });
-    });
-    
-    // حساب الأرشيفات B
-    Object.values(archiveB).forEach(archive => {
-      archive.accounts.forEach(account => {
-        totalGold += account.balance;
-        totalAccounts++;
-      });
-    });
-    
-    // حساب الحسابات النشطة في قاعدة البيانات
-    const activeAccounts = await this.db.getAllAccounts();
-    activeAccounts.forEach(account => {
-      totalGold += account.balance;
-      totalAccounts++;
-    });
-    
-    return `💰 إجمالي الغولد في النظام:
+    try {
+      const accounts = await Account.find({});
+      const totalGold = accounts.reduce((sum, acc) => sum + acc.balance, 0);
+      const totalAccounts = accounts.length;
+      
+      // حساب الأرشيفات من قاعدة البيانات
+      const archivesA = await Archive.find({ series: 'A' });
+      const archivesB = await Archive.find({ series: 'B' });
+      
+      const archiveACount = archivesA.reduce((sum, arch) => sum + arch.accounts.length, 0);
+      const archiveBCount = archivesB.reduce((sum, arch) => sum + arch.accounts.length, 0);
+      
+      return `💰 إجمالي الغولد في النظام:
 
 📊 الإحصائيات:
 • إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
@@ -545,29 +577,37 @@ class BankSystem {
 • متوسط الرصيد: ${Math.round(totalGold / totalAccounts)} ${config.currency}
 
 📁 المصادر:
-• الأرشيفات A: 1,000 حساب
-• الأرشيفات B: 772 حساب  
-• الحسابات النشطة: ${activeAccounts.length} حساب`;
+• الأرشيفات A: ${archiveACount} حساب
+• الأرشيفات B: ${archiveBCount} حساب  
+• الحسابات النشطة: ${accounts.length} حساب`;
+    } catch (error) {
+      console.error('خطأ في عرض الإجمالي:', error);
+      return "❌ حدث خطأ في عرض الإجمالي";
+    }
   }
 
   // عرض المحظورين
   async handleBannedUsers(userId) {
-    const accounts = await this.db.getAllAccounts();
-    const bannedAccounts = accounts.filter(acc => acc.status === 'banned');
-    
-    if (bannedAccounts.length === 0) {
-      return "✅ لا توجد حسابات محظورة حالياً";
+    try {
+      const bannedAccounts = await Account.find({ status: 'banned' });
+      
+      if (bannedAccounts.length === 0) {
+        return "✅ لا توجد حسابات محظورة حالياً";
+      }
+      
+      let bannedText = "🚫 الحسابات المحظورة:\n\n";
+      
+      bannedAccounts.forEach(account => {
+        bannedText += `• ${account.code} - ${account.username}\n`;
+      });
+      
+      bannedText += `\n---\nإجمالي المحظورين: ${bannedAccounts.length} حساب`;
+      
+      return bannedText;
+    } catch (error) {
+      console.error('خطأ في عرض المحظورين:', error);
+      return "❌ حدث خطأ في عرض المحظورين";
     }
-    
-    let bannedText = "🚫 الحسابات المحظورة:\n\n";
-    
-    bannedAccounts.forEach(account => {
-      bannedText += `• ${account.code} - ${account.username}\n`;
-    });
-    
-    bannedText += `\n---\nإجمالي المحظورين: ${bannedAccounts.length} حساب`;
-    
-    return bannedText;
   }
 
   // التحكم في النظام (للمشرفين فقط)
@@ -643,16 +683,20 @@ class BankSystem {
 `;
     }
 
-    const accounts = await this.db.getAllAccounts();
-    const activeAccounts = accounts.filter(acc => acc.balance > 0).length;
-    const totalGold = accounts.reduce((sum, acc) => sum + acc.balance, 0);
-    
-    statusText += `📊 الإحصائيات:
+    try {
+      const accounts = await Account.find({});
+      const activeAccounts = accounts.filter(acc => acc.balance > 0).length;
+      const totalGold = accounts.reduce((sum, acc) => sum + acc.balance, 0);
+      
+      statusText += `📊 الإحصائيات:
 • إجمالي الحسابات: ${accounts.length}
 • الحسابات النشطة: ${activeAccounts}
 • إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
 • السلسلة الحالية: ${this.currentLetter}
 • التالي: ${this.getNextCode()}`;
+    } catch (error) {
+      statusText += `❌ خطأ في تحميل الإحصائيات`;
+    }
 
     return statusText;
   }
@@ -730,21 +774,26 @@ class BankSystem {
       return `❌ هذا الأمر للمدير الأساسي فقط`;
     }
     
-    const accounts = await this.db.getAllAccounts();
-    let totalGold = 0;
-    let activeAccounts = 0;
-    
-    accounts.forEach(account => {
-      totalGold += account.balance;
-      if (account.balance > 0) activeAccounts++;
-    });
-    
-    return `💰 إحصائيات النظام:
+    try {
+      const accounts = await Account.find({});
+      let totalGold = 0;
+      let activeAccounts = 0;
+      
+      accounts.forEach(account => {
+        totalGold += account.balance;
+        if (account.balance > 0) activeAccounts++;
+      });
+      
+      return `💰 إحصائيات النظام:
 
 • إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
 • عدد الحسابات: ${accounts.length.toLocaleString()}
 • الحسابات النشطة: ${activeAccounts.toLocaleString()}
 • متوسط الرصيد: ${Math.round(totalGold / accounts.length)} ${config.currency}`;
+    } catch (error) {
+      console.error('خطأ في عرض المجموع:', error);
+      return "❌ حدث خطأ في عرض إحصائيات النظام";
+    }
   }
 
   async handleArchive(userId, command) {
@@ -759,24 +808,20 @@ class BankSystem {
     }
     
     const series = match[1].toUpperCase();
-    const archiveNum = match[2];
-    const archiveKey = series + archiveNum;
+    const archiveNum = parseInt(match[2]);
     
-    let archiveData;
-    if (series === 'A') {
-      archiveData = archiveA[archiveKey];
-    } else if (series === 'B') {
-      archiveData = archiveB[archiveKey];
-    } else {
-      return `❌ الأرشيف غير موجود. السلاسل المتاحة: A, B`;
+    try {
+      const archive = await Archive.findOne({ series, number: archiveNum });
+      if (!archive) {
+        const availableArchives = await this.getAvailableArchives(series);
+        return `❌ الأرشيف ${series}${archiveNum} غير موجود\n\n📂 الأرشيفات المتاحة:\n${availableArchives}`;
+      }
+      
+      return this.formatArchiveDisplay(archive);
+    } catch (error) {
+      console.error('خطأ في عرض الأرشيف:', error);
+      return `❌ حدث خطأ في عرض الأرشيف`;
     }
-    
-    if (!archiveData) {
-      const availableArchives = this.getAvailableArchives(series);
-      return `❌ الأرشيف ${archiveKey} غير موجود\n\n📂 الأرشيفات المتاحة:\n${availableArchives}`;
-    }
-    
-    return this.formatArchiveDisplay(archiveData);
   }
 
   async handleDeduct(userId, command) {
@@ -827,25 +872,25 @@ class BankSystem {
     
     const code = match[1].toUpperCase();
     
-    // البحث في الأرشيفات أولاً
-    const archiveResult = this.searchInArchives(code);
-    if (archiveResult) {
-      return archiveResult;
-    }
-    
-    // إذا لم يوجد في الأرشيفات، البحث في قاعدة البيانات
-    const account = await this.db.getAccountByCode(code);
-    
-    if (!account) {
-      return `❌ الحساب ${code} غير موجود`;
-    }
-    
-    return `💰 رصيد الحساب:
+    // البحث في قاعدة البيانات
+    try {
+      const account = await Account.findOne({ code });
+      
+      if (!account) {
+        return `❌ الحساب ${code} غير موجود`;
+      }
+      
+      return `💰 رصيد الحساب:
 
 الكود: ${account.code}
 الاسم: ${account.username}
 الرصيد: ${account.balance} ${config.currency}
-الحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
+الحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}
+المصدر: ${account.source === 'archive' ? 'الأرشيف' : 'حساب جديد'}`;
+    } catch (error) {
+      console.error('خطأ في عرض الرصيد:', error);
+      return `❌ حدث خطأ في عرض رصيد الحساب`;
+    }
   }
 
   // عرض رصيدي (للمستخدم العادي)
@@ -880,32 +925,24 @@ class BankSystem {
     return `🆔 معرفك هو: ${userId}`;
   }
 
-  searchInArchives(code) {
-    const series = code[0].toUpperCase();
-    const number = parseInt(code.slice(1, 4));
-    const archiveNum = Math.floor(number / 100) + 1;
-    const archiveKey = series + archiveNum;
-    
-    let archiveData;
-    if (series === 'A') {
-      archiveData = archiveA[archiveKey];
-    } else if (series === 'B') {
-      archiveData = archiveB[archiveKey];
-    } else {
-      return null;
-    }
-    
-    if (!archiveData) return null;
-    
-    const account = archiveData.accounts.find(acc => acc.code === code);
-    if (!account) return null;
-    
-    return `💰 رصيد الحساب:
+  async searchInArchives(code) {
+    try {
+      const account = await Account.findOne({ code });
+      if (!account) {
+        return null;
+      }
+
+      return `💰 رصيد الحساب:
 
 الكود: ${account.code}
 الاسم: ${account.username}
 الرصيد: ${account.balance} ${config.currency}
-المصدر: الأرشيف ${archiveKey}`;
+المصدر: ${account.source === 'archive' ? 'الأرشيف' : 'حساب جديد'}
+الحالة: ${account.status === 'active' ? '🟢 نشط' : '🔴 محظور'}`;
+    } catch (error) {
+      console.error('خطأ في البحث في الأرشيفات:', error);
+      return null;
+    }
   }
 
   async handleHelp(userId) {
@@ -964,6 +1001,7 @@ class BankSystem {
       if (this.hasPermission(userId, 'محظورين')) {
         helpText += `• محظورين - عرض قائمة المحظورين\n`;
       }
+      helpText += `• تعديل كلمة السر [الكود] [كلمة السر] - تعديل كلمة السر\n`;
       
       helpText += `\n`;
       
@@ -983,6 +1021,7 @@ class BankSystem {
 • رصيدي - عرض رصيدك
 • حالتي - عرض معلومات حسابك
 • تحويل [المبلغ] [الكود] - تحويل غولد
+• تعديل كلمة السر [الكود] [كلمة السر الجديدة] - تعديل كلمة سر حسابك
 • معرفي - عرض معرفك
 • حالة النظام - عرض حالة النظام
 • تسجيل خروج - تسجيل الخروج
@@ -994,28 +1033,31 @@ class BankSystem {
     
     // إضافة معلومات النظام للمشرفين فقط
     if (isAdmin) {
-      const accounts = await this.db.getAllAccounts();
-      const totalGold = accounts.reduce((sum, acc) => sum + acc.balance, 0);
-      
-      helpText += `📊 معلومات النظام:
+      try {
+        const accounts = await Account.find({});
+        const totalGold = accounts.reduce((sum, acc) => sum + acc.balance, 0);
+        
+        helpText += `📊 معلومات النظام:
 • الرصيد الابتدائي: 15 ${config.currency}
 • إجمالي الحسابات: ${accounts.length}
 • إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
 • السلسلة الحالية: ${this.currentLetter}
 • التالي: ${this.getNextCode()}`;
+      } catch (error) {
+        helpText += `📊 معلومات النظام: ❌ خطأ في تحميل الإحصائيات`;
+      }
     }
     
     return helpText;
   }
 
-  getAvailableArchives(series) {
-    let archives = [];
-    if (series === 'A') {
-      archives = Object.keys(archiveA).map(key => `• ${key}: ${archiveA[key].start} - ${archiveA[key].end}`);
-    } else if (series === 'B') {
-      archives = Object.keys(archiveB).map(key => `• ${key}: ${archiveB[key].start} - ${archiveB[key].end}`);
+  async getAvailableArchives(series) {
+    try {
+      const archives = await Archive.find({ series }).sort({ number: 1 });
+      return archives.map(arch => `• ${arch.series}${arch.number}: ${arch.start} - ${arch.end}`).join('\n');
+    } catch (error) {
+      return "❌ خطأ في تحميل الأرشيفات";
     }
-    return archives.join('\n');
   }
 
   getUnknownCommandResponse(command) {
@@ -1044,7 +1086,7 @@ class BankSystem {
   }
 
   async createAccount(userId, username, password = null, customCode = null) {
-    let code = customCode || generateUserCode();
+    let code = customCode || this.getNextCode();
     const passwordHash = password ? hashPassword(password) : hashPassword('default123');
     
     try {
@@ -1064,8 +1106,8 @@ class BankSystem {
       return [false, "❌ المبلغ يجب أن يكون موجباً"];
     }
     
-    const fromBalance = await this.db.getBalance(fromUser);
-    if (fromBalance < amount) {
+    const fromAccount = await this.db.getAccountInfo(fromUser);
+    if (!fromAccount || fromAccount.balance < amount) {
       return [false, "❌ رصيد غير كافٍ"];
     }
     
@@ -1080,7 +1122,7 @@ class BankSystem {
     
     try {
       await this.db.transferMoney(fromUser, toAccount.user_id, toCode, amount);
-      const newBalance = fromBalance - amount;
+      const newBalance = fromAccount.balance - amount;
       
       return [true, `✅ تم التحويل بنجاح!\nالمبلغ: ${amount} ${config.currency}\nإلى: ${toCode}\nرصيدك الجديد: ${newBalance} ${config.currency}`];
     } catch (error) {
