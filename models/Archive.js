@@ -8,20 +8,19 @@ class Archive {
     this.name = name;
     this.start = start;
     this.end = end;
-    this.accounts = accounts || [];
+    this.accounts = accounts;
   }
 
   // دالة ثابتة للحصول على الأرشيف بناءً على السلسلة والرقم
   static async findOne({ series, number }) {
     try {
-      console.log(`🔍 البحث عن الأرشيف: ${series}${number}`);
+      const archiveDir = path.join(__dirname, '..', 'archives', `archive${series}`);
+      const archivePath = path.join(archiveDir, `${series}${number}.js`);
       
-      const archivePath = path.join(__dirname, '..', 'archives', `archive${series}`, `${series}${number}.js`);
-      
-      console.log(`📁 المسار: ${archivePath}`);
+      console.log(`🔍 محاولة تحميل الأرشيف من: ${archivePath}`);
       
       if (!fs.existsSync(archivePath)) {
-        console.log(`❌ ملف الأرشيف غير موجود`);
+        console.log(`❌ ملف الأرشيف غير موجود: ${archivePath}`);
         return null;
       }
 
@@ -31,13 +30,12 @@ class Archive {
       // استيراد ملف الأرشيف
       const archiveData = require(archivePath);
       
-      console.log(`✅ تم تحميل الأرشيف: ${archiveData.name || archiveData.title}`);
-      console.log(`📊 عدد الحسابات: ${archiveData.accounts ? archiveData.accounts.length : 0}`);
+      console.log(`✅ تم تحميل الأرشيف: ${archiveData.name} - ${archiveData.accounts.length} حساب`);
       
       return new Archive(
         series,
         number,
-        archiveData.name || archiveData.title || `أرشيف ${series}${number}`,
+        archiveData.name || `أرشيف ${series}${number}`,
         archiveData.start || 'غير محدد',
         archiveData.end || 'غير محدد',
         archiveData.accounts || []
@@ -53,24 +51,18 @@ class Archive {
     try {
       const archiveDir = path.join(__dirname, '..', 'archives', `archive${series}`);
       
-      console.log(`🔍 البحث في مجلد: ${archiveDir}`);
-      
       if (!fs.existsSync(archiveDir)) {
-        console.log(`❌ مجلد السلسلة غير موجود`);
+        console.log(`❌ مجلد السلسلة غير موجود: ${archiveDir}`);
         return [];
       }
       
       const files = fs.readdirSync(archiveDir);
-      console.log(`📁 الملفات الموجودة: ${files.join(', ')}`);
-      
       const archives = [];
       
       for (const file of files) {
         if (file.endsWith('.js') && file.startsWith(series)) {
           const number = parseInt(file.replace(`${series}`, '').replace('.js', ''));
           if (!isNaN(number)) {
-            console.log(`🔍 معالجة الملف: ${file}, الرقم: ${number}`);
-            
             const archivePath = path.join(archiveDir, file);
             try {
               // حذف الكاش
@@ -80,13 +72,11 @@ class Archive {
               archives.push(new Archive(
                 series,
                 number,
-                archiveData.name || archiveData.title || `أرشيف ${series}${number}`,
+                archiveData.name || `أرشيف ${series}${number}`,
                 archiveData.start || 'غير محدد',
                 archiveData.end || 'غير محدد',
                 archiveData.accounts || []
               ));
-              
-              console.log(`✅ تم تحميل الأرشيف: ${series}${number}`);
             } catch (error) {
               console.error(`❌ خطأ في تحميل الأرشيف ${file}:`, error);
             }
@@ -95,10 +85,7 @@ class Archive {
       }
       
       // ترتيب الأرشيفات حسب الرقم
-      const sortedArchives = archives.sort((a, b) => a.number - b.number);
-      console.log(`✅ تم تحميل ${sortedArchives.length} أرشيف من سلسلة ${series}`);
-      
-      return sortedArchives;
+      return archives.sort((a, b) => a.number - b.number);
     } catch (error) {
       console.error('❌ خطأ في البحث عن الأرشيفات:', error);
       return [];
@@ -115,7 +102,7 @@ class Archive {
       }
       
       return archives.map(arch => 
-        `• ${arch.series}${arch.number}: ${arch.name} (${arch.start} - ${arch.end})`
+        `• ${arch.series}${arch.number}: ${arch.name} (${arch.start} - ${arch.end}) - ${arch.accounts.length} حساب`
       ).join('\n');
     } catch (error) {
       console.error('❌ خطأ في ج الأرشيفات المتاحة:', error);
