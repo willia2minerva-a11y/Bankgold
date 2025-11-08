@@ -1,4 +1,4 @@
-const Database = require('./database-mongodb');
+const Database = require('./database-mongodb.js');
 const config = require('./config');
 const { hashPassword, verifyPassword, generateUserCode } = require('./utils/security');
 const Archive = require('./models/Archive');
