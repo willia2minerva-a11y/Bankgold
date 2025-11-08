@@ -1,4 +1,4 @@
-const Database = require('./database');
+const Database = require('./database-mongodb');
 const config = require('./config');
 
 class DataImporter {
