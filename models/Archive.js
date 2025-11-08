@@ -1,16 +1,12 @@
 const mongoose = require('mongoose');
 
-const accountSchema = new mongoose.Schema({
-  code: { type: String, required: true, unique: true },
+const archiveAccountSchema = new mongoose.Schema({
+  code: { type: String, required: true },
   username: { type: String, required: true },
   balance: { type: Number, required: true, default: 15 },
   status: { type: String, enum: ['active', 'banned'], default: 'active' },
-  source: { type: String, enum: ['archive', 'new'], default: 'archive' },
-  user_id: { type: String, default: null },
-  password: { type: String, default: null },
-  created_at: { type: Date, default: Date.now },
-  last_login: { type: Date, default: Date.now }
-});
+  source: { type: String, enum: ['archive', 'new'], default: 'archive' }
+}, { _id: false });
 
 const archiveSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -18,7 +14,7 @@ const archiveSchema = new mongoose.Schema({
   number: { type: Number, required: true },
   start: { type: String, required: true },
   end: { type: String, required: true },
-  accounts: [accountSchema],
+  accounts: [archiveAccountSchema],
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now }
 });
