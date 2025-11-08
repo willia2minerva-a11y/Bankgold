@@ -1,4 +1,4 @@
-const Database = require('./database-mongodb.js');
+const Database = require('./database-mongodb');
 const config = require('./config');
 const { hashPassword, verifyPassword, generateUserCode } = require('./utils/security');
 const Archive = require('./models/Archive');
@@ -530,9 +530,13 @@ class BankSystem {
   // عرض أعلى 10 مستخدمين (للمدير الأساسي فقط)
   async handleTopUsers(userId) {
     try {
-      const accounts = await Account.find({ balance: { $gt: 0 } })
-        .sort({ balance: -1 })
-        .limit(10);
+      const accounts = await Account.find({ 
+        balance: { $gt: 0 },
+        status: 'active'
+      })
+      .sort({ balance: -1 })
+      .limit(10)
+      .lean();
       
       if (accounts.length === 0) {
         return "📊 لا توجد حسابات نشطة لعرضها";
@@ -550,7 +554,7 @@ class BankSystem {
       
       return topText;
     } catch (error) {
-      console.error('خطأ في عرض التوب:', error);
+      console.error('❌ خطأ في عرض التوب:', error);
       return "❌ حدث خطأ في عرض أعلى الحسابات";
     }
   }
@@ -574,14 +578,14 @@ class BankSystem {
 📊 الإحصائيات:
 • إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
 • عدد الحسابات: ${totalAccounts.toLocaleString()}
-• متوسط الرصيد: ${Math.round(totalGold / totalAccounts)} ${config.currency}
+• متوسط الرصيد: ${totalAccounts > 0 ? Math.round(totalGold / totalAccounts) : 0} ${config.currency}
 
 📁 المصادر:
 • الأرشيفات A: ${archiveACount} حساب
 • الأرشيفات B: ${archiveBCount} حساب  
 • الحسابات النشطة: ${accounts.length} حساب`;
     } catch (error) {
-      console.error('خطأ في عرض الإجمالي:', error);
+      console.error('❌ خطأ في عرض الإجمالي:', error);
       return "❌ حدث خطأ في عرض الإجمالي";
     }
   }
@@ -605,7 +609,7 @@ class BankSystem {
       
       return bannedText;
     } catch (error) {
-      console.error('خطأ في عرض المحظورين:', error);
+      console.error('❌ خطأ في عرض المحظورين:', error);
       return "❌ حدث خطأ في عرض المحظورين";
     }
   }
@@ -776,22 +780,31 @@ class BankSystem {
     
     try {
       const accounts = await Account.find({});
+      
+      if (accounts.length === 0) {
+        return `📊 لا توجد حسابات في النظام بعد`;
+      }
+      
       let totalGold = 0;
       let activeAccounts = 0;
       
       accounts.forEach(account => {
         totalGold += account.balance;
-        if (account.balance > 0) activeAccounts++;
+        if (account.balance > 0 && account.status === 'active') {
+          activeAccounts++;
+        }
       });
+      
+      const averageBalance = accounts.length > 0 ? Math.round(totalGold / accounts.length) : 0;
       
       return `💰 إحصائيات النظام:
 
 • إجمالي الغولد: ${totalGold.toLocaleString()} ${config.currency}
 • عدد الحسابات: ${accounts.length.toLocaleString()}
 • الحسابات النشطة: ${activeAccounts.toLocaleString()}
-• متوسط الرصيد: ${Math.round(totalGold / accounts.length)} ${config.currency}`;
+• متوسط الرصيد: ${averageBalance} ${config.currency}`;
     } catch (error) {
-      console.error('خطأ في عرض المجموع:', error);
+      console.error('❌ خطأ في عرض المجموع:', error);
       return "❌ حدث خطأ في عرض إحصائيات النظام";
     }
   }
@@ -802,7 +815,10 @@ class BankSystem {
       return `❌ هذا الأمر للمشرفين فقط`;
     }
     
-    const match = command.match(/ارشيف\s+([AB])(\d+)/i);
+    // تحسين التعبير النمطي ليقبل جميع الأشكال
+    const match = command.match(/ارشيف\s+([AB])\s*(\d+)/i) || 
+                  command.match(/ارشيف\s+([AB])(\d+)/i);
+    
     if (!match) {
       return `❌ صيغة خاطئة! استخدم:\nارشيف [A/B][الرقم]\nمثال: ارشيف A1\nمثال: ارشيف B4`;
     }
@@ -811,16 +827,24 @@ class BankSystem {
     const archiveNum = parseInt(match[2]);
     
     try {
-      const archive = await Archive.findOne({ series, number: archiveNum });
+      console.log(`🔍 البحث عن الأرشيف: ${series}${archiveNum}`);
+      
+      const archive = await Archive.findOne({ 
+        series: series, 
+        number: archiveNum 
+      });
+      
       if (!archive) {
+        console.log(`❌ الأرشيف غير موجود: ${series}${archiveNum}`);
         const availableArchives = await this.getAvailableArchives(series);
-        return `❌ الأرشيف ${series}${archiveNum} غير موجود\n\n📂 الأرشيفات المتاحة:\n${availableArchives}`;
+        return `❌ الأرشيف ${series}${archiveNum} غير موجود\n\n📂 الأرشيفات المتاحة في سلسلة ${series}:\n${availableArchives}`;
       }
       
+      console.log(`✅ تم العثور على الأرشيف: ${archive.name}`);
       return this.formatArchiveDisplay(archive);
     } catch (error) {
-      console.error('خطأ في عرض الأرشيف:', error);
-      return `❌ حدث خطأ في عرض الأرشيف`;
+      console.error('❌ خطأ في عرض الأرشيف:', error);
+      return `❌ حدث خطأ في عرض الأرشيف ${series}${archiveNum}: ${error.message}`;
     }
   }
 
@@ -1053,9 +1077,19 @@ class BankSystem {
 
   async getAvailableArchives(series) {
     try {
-      const archives = await Archive.find({ series }).sort({ number: 1 });
-      return archives.map(arch => `• ${arch.series}${arch.number}: ${arch.start} - ${arch.end}`).join('\n');
+      const archives = await Archive.find({ series: series.toUpperCase() })
+        .sort({ number: 1 })
+        .lean();
+      
+      if (archives.length === 0) {
+        return `لا توجد أرشيفات في سلسلة ${series}`;
+      }
+      
+      return archives.map(arch => 
+        `• ${arch.series}${arch.number}: ${arch.name} (${arch.start} - ${arch.end})`
+      ).join('\n');
     } catch (error) {
+      console.error('❌ خطأ في تحميل الأرشيفات:', error);
       return "❌ خطأ في تحميل الأرشيفات";
     }
   }
@@ -1080,7 +1114,7 @@ class BankSystem {
     text += `--- الإحصاءات ---\n`;
     text += `• عدد الحسابات: ${accountCount}\n`;
     text += `• إجمالي الغولد: ${totalBalance} ${config.currency}\n`;
-    text += `• متوسط الرصيد: ${Math.round(totalBalance / accountCount)} ${config.currency}`;
+    text += `• متوسط الرصيد: ${accountCount > 0 ? Math.round(totalBalance / accountCount) : 0} ${config.currency}`;
     
     return text;
   }
