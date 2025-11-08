@@ -2,7 +2,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const config = require('./config');
-const BankSystem = require('./bankSystem');
+const BankSystem = require('./bankSystem-mongodb.js');
 
 const app = express();
 app.use(bodyParser.json());
