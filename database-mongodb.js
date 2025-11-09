@@ -14,11 +14,16 @@ class MongoDBDatabase {
         await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/bankgold', {
           useNewUrlParser: true,
           useUnifiedTopology: true,
-          serverSelectionTimeoutMS: 5000,
+          serverSelectionTimeoutMS: 30000, // زيادة وقت الانتظار إلى 30 ثانية
           socketTimeoutMS: 45000,
+          bufferCommands: false, // تعطيل buffering
+          bufferMaxEntries: 0
         });
         this.isConnected = true;
         console.log('✅ تم الاتصال بقاعدة البيانات MongoDB');
+      } else {
+        this.isConnected = true;
+        console.log('✅ استخدام اتصال MongoDB الحالي');
       }
     } catch (error) {
       console.error('❌ خطأ في الاتصال بقاعدة البيانات:', error);
@@ -30,12 +35,29 @@ class MongoDBDatabase {
     if (!this.isConnected) {
       await this.connect();
     }
+    return this.isConnected;
   }
 
   async createAccount(userId, code, username, password, balance) {
-    await this.ensureConnection();
+    const isConnected = await this.ensureConnection();
+    if (!isConnected) {
+      throw new Error('الاتصال بقاعدة البيانات غير متاح');
+    }
+
     try {
-      // إنشاء الحساب في مجموعة الحسابات المنفردة فقط
+      // استخدام try-catch منفصل للتحقق من الحساب الموجود
+      let existingAccount;
+      try {
+        existingAccount = await Account.findOne({ code });
+      } catch (error) {
+        console.warn('⚠️ خطأ في البحث عن الحساب الموجود، المتابعة:', error.message);
+      }
+
+      if (existingAccount) {
+        throw new Error(`الحساب ${code} موجود مسبقاً`);
+      }
+
+      // إنشاء الحساب
       const account = new Account({
         code,
         username,
@@ -58,7 +80,12 @@ class MongoDBDatabase {
   }
 
   async getAccountByCode(code) {
-    await this.ensureConnection();
+    const isConnected = await this.ensureConnection();
+    if (!isConnected) {
+      console.warn('⚠️ الاتصال غير متاح، إرجاع null');
+      return null;
+    }
+
     try {
       const account = await Account.findOne({ code });
       return account ? account.toObject() : null;
@@ -69,7 +96,12 @@ class MongoDBDatabase {
   }
 
   async getAccountInfo(userId) {
-    await this.ensureConnection();
+    const isConnected = await this.ensureConnection();
+    if (!isConnected) {
+      console.warn('⚠️ الاتصال غير متاح، إرجاع null');
+      return null;
+    }
+
     try {
       const account = await Account.findOne({ user_id: userId, status: 'active' });
       return account ? account.toObject() : null;
@@ -80,7 +112,12 @@ class MongoDBDatabase {
   }
 
   async getAllAccounts() {
-    await this.ensureConnection();
+    const isConnected = await this.ensureConnection();
+    if (!isConnected) {
+      console.warn('⚠️ الاتصال غير متاح، إرجاع مصفوفة فارغة');
+      return [];
+    }
+
     try {
       const accounts = await Account.find({});
       return accounts.map(acc => acc.toObject());
@@ -91,24 +128,27 @@ class MongoDBDatabase {
   }
 
   async transferMoney(fromUser, toUser, toCode, amount) {
-    await this.ensureConnection();
-    
-    // استخدام المعاملات إذا كان الاتصال نشطاً
-    if (this.isConnected) {
+    const isConnected = await this.ensureConnection();
+    if (!isConnected) {
+      throw new Error('الاتصال بقاعدة البيانات غير متاح');
+    }
+
+    try {
+      const fromAccount = await Account.findOne({ user_id: fromUser });
+      const toAccount = await Account.findOne({ user_id: toUser });
+
+      if (!fromAccount || !toAccount) {
+        throw new Error('الحساب غير موجود');
+      }
+
+      if (fromAccount.balance < amount) {
+        throw new Error('رصيد غير كافٍ');
+      }
+
+      // استخدام المعاملات إذا أمكن
       const session = await mongoose.startSession();
-      session.startTransaction();
-
       try {
-        const fromAccount = await Account.findOne({ user_id: fromUser }).session(session);
-        const toAccount = await Account.findOne({ user_id: toUser }).session(session);
-
-        if (!fromAccount || !toAccount) {
-          throw new Error('الحساب غير موجود');
-        }
-
-        if (fromAccount.balance < amount) {
-          throw new Error('رصيد غير كافٍ');
-        }
+        session.startTransaction();
 
         // خصم المبلغ من المرسل
         fromAccount.balance -= amount;
@@ -123,19 +163,22 @@ class MongoDBDatabase {
         return true;
       } catch (error) {
         await session.abortTransaction();
-        console.error('❌ خطأ في التحويل:', error);
         throw error;
       } finally {
         session.endSession();
       }
-    } else {
-      // السيناريو البديل بدون معاملات (لحالات فشل الاتصال)
-      throw new Error('الاتصال بقاعدة البيانات غير متاح');
+    } catch (error) {
+      console.error('❌ خطأ في التحويل:', error);
+      throw error;
     }
   }
 
   async updateBalance(userId, newBalance) {
-    await this.ensureConnection();
+    const isConnected = await this.ensureConnection();
+    if (!isConnected) {
+      throw new Error('الاتصال بقاعدة البيانات غير متاح');
+    }
+
     try {
       await Account.findOneAndUpdate(
         { user_id: userId },
@@ -150,7 +193,11 @@ class MongoDBDatabase {
   }
 
   async updateAccountStatus(userId, status) {
-    await this.ensureConnection();
+    const isConnected = await this.ensureConnection();
+    if (!isConnected) {
+      throw new Error('الاتصال بقاعدة البيانات غير متاح');
+    }
+
     try {
       await Account.findOneAndUpdate(
         { user_id: userId },
@@ -165,7 +212,11 @@ class MongoDBDatabase {
   }
 
   async updateUserId(oldUserId, newUserId) {
-    await this.ensureConnection();
+    const isConnected = await this.ensureConnection();
+    if (!isConnected) {
+      throw new Error('الاتصال بقاعدة البيانات غير متاح');
+    }
+
     try {
       await Account.findOneAndUpdate(
         { user_id: oldUserId },
@@ -180,7 +231,11 @@ class MongoDBDatabase {
   }
 
   async updateAccountPassword(userId, passwordHash) {
-    await this.ensureConnection();
+    const isConnected = await this.ensureConnection();
+    if (!isConnected) {
+      throw new Error('الاتصال بقاعدة البيانات غير متاح');
+    }
+
     try {
       await Account.findOneAndUpdate(
         { user_id: userId },
@@ -195,7 +250,11 @@ class MongoDBDatabase {
   }
 
   async updateLastLogin(userId) {
-    await this.ensureConnection();
+    const isConnected = await this.ensureConnection();
+    if (!isConnected) {
+      return false;
+    }
+
     try {
       await Account.findOneAndUpdate(
         { user_id: userId },
@@ -204,7 +263,7 @@ class MongoDBDatabase {
       return true;
     } catch (error) {
       console.error('❌ خطأ في تحديث آخر تسجيل دخول:', error);
-      throw error;
+      return false;
     }
   }
 
