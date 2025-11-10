@@ -14,9 +14,9 @@ class MongoDBDatabase {
         await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/bankgold', {
           useNewUrlParser: true,
           useUnifiedTopology: true,
-          serverSelectionTimeoutMS: 30000, // زيادة وقت الانتظار إلى 30 ثانية
+          serverSelectionTimeoutMS: 30000,
           socketTimeoutMS: 45000,
-          bufferCommands: false, // تعطيل buffering
+          bufferCommands: false,
           bufferMaxEntries: 0
         });
         this.isConnected = true;
