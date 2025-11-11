@@ -54,27 +54,41 @@ class MongoDBDatabase {
       }
 
       if (existingAccount) {
-        throw new Error(`الحساب ${code} موجود مسبقاً`);
+        // إذا كان الحساب موجوداً، نقوم بتحديثه بدلاً من إنشاء جديد
+        await Account.findOneAndUpdate(
+          { code },
+          {
+            user_id: userId,
+            username,
+            password,
+            balance,
+            status: 'active',
+            source: 'database',
+            archive_ref: 'activated',
+            last_login: new Date()
+          }
+        );
+        console.log(`✅ تم تحديث الحساب الموجود: ${code}`);
+      } else {
+        // إنشاء الحساب جديد
+        const account = new Account({
+          code,
+          username,
+          balance,
+          status: 'active',
+          source: 'database',
+          archive_ref: 'direct',
+          user_id: userId,
+          password
+        });
+
+        await account.save();
+        console.log(`✅ تم إنشاء الحساب: ${code}`);
       }
-
-      // إنشاء الحساب
-      const account = new Account({
-        code,
-        username,
-        balance,
-        status: 'active',
-        source: 'new',
-        archive_ref: 'direct',
-        user_id: userId,
-        password
-      });
-
-      await account.save();
-      console.log(`✅ تم إنشاء الحساب: ${code}`);
 
       return true;
     } catch (error) {
-      console.error('❌ خطأ في إنشاء الحساب:', error);
+      console.error('❌ خطأ في إنشاء/تحديث الحساب:', error);
       throw error;
     }
   }
