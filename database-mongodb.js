@@ -16,8 +16,7 @@ class MongoDBDatabase {
           useUnifiedTopology: true,
           serverSelectionTimeoutMS: 30000,
           socketTimeoutMS: 45000,
-          bufferCommands: false,
-          bufferMaxEntries: 0
+          bufferCommands: false
         });
         this.isConnected = true;
         console.log('✅ تم الاتصال بقاعدة البيانات MongoDB');
@@ -45,7 +44,6 @@ class MongoDBDatabase {
     }
 
     try {
-      // استخدام try-catch منفصل للتحقق من الحساب الموجود
       let existingAccount;
       try {
         existingAccount = await Account.findOne({ code });
@@ -54,7 +52,6 @@ class MongoDBDatabase {
       }
 
       if (existingAccount) {
-        // إذا كان الحساب موجوداً، نقوم بتحديثه بدلاً من إنشاء جديد
         await Account.findOneAndUpdate(
           { code },
           {
@@ -70,7 +67,6 @@ class MongoDBDatabase {
         );
         console.log(`✅ تم تحديث الحساب الموجود: ${code}`);
       } else {
-        // إنشاء الحساب جديد
         const account = new Account({
           code,
           username,
@@ -159,16 +155,13 @@ class MongoDBDatabase {
         throw new Error('رصيد غير كافٍ');
       }
 
-      // استخدام المعاملات إذا أمكن
       const session = await mongoose.startSession();
       try {
         session.startTransaction();
 
-        // خصم المبلغ من المرسل
         fromAccount.balance -= amount;
         await fromAccount.save({ session });
 
-        // إضافة المبلغ للمستلم
         toAccount.balance += amount;
         await toAccount.save({ session });
 
