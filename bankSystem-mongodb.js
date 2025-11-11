@@ -1083,58 +1083,63 @@ class BankSystem {
     }
   }
 
-  // عرض الأرشيف كاملاً كما طلبت
   async handleArchive(userId, command) {
     if (!this.isAdmin(userId)) {
-      return `❌ هذا الأمر للمشرفين فقط`;
+        return `❌ هذا الأمر للمشرفين فقط`;
     }
     
     const match = command.match(/ارشيف\s+([AB])\s*(\d+)/i) || 
                   command.match(/ارشيف\s+([AB])(\d+)/i);
     
     if (!match) {
-      return `❌ صيغة خاطئة! استخدم:\nارشيف [A/B][الرقم]\nمثال: ارشيف A1\nمثال: ارشيف B4`;
+        return `❌ صيغة خاطئة! استخدم:\nارشيف [A/B][الرقم]\nمثال: ارشيف A1\nمثال: ارشيف B4`;
     }
     
     const series = match[1].toUpperCase();
     const archiveNum = parseInt(match[2]);
     
     try {
-      console.log(`🔍 البحث عن الأرشيف: ${series}${archiveNum}`);
-      
-      const archive = await Archive.findOne({ 
-        series: series, 
-        number: archiveNum 
-      });
-      
-      if (!archive) {
-        console.log(`❌ الأرشيف غير موجود: ${series}${archiveNum}`);
-        const availableArchives = await this.getAvailableArchives(series);
-        return `❌ الأرشيف ${series}${archiveNum} غير موجود\n\n📂 الأرشيفات المتاحة في سلسلة ${series}:\n${availableArchives}`;
-      }
-      
-      console.log(`✅ تم العثور على الأرشيف: ${archive.name}`);
-      
-      // بناء نص الأرشيف كاملاً كما طلبت
-      let archiveText = `📁 الأرشيف ${archive.name}\n\n`;
-      
-      // إضافة كل حساب في الأرشيف بالتنسيق المطلوب
-      archive.accounts.forEach((account, index) => {
-        const accountNumber = (parseInt(archive.start.replace(/[^\d]/g, '')) + index).toString();
-        const formattedBalance = account.balance.toLocaleString();
+        console.log(`🔍 البحث عن الأرشيف: ${series}${archiveNum}`);
         
-        // تنسيق النص كما في المثال المطلوب
-        archiveText += `${accountNumber} _${account.code} ${account.username}\n${formattedBalance} G\n\n`;
-      });
-      
-      return archiveText;
-      
+        const archive = await Archive.findOne({ 
+            series: series, 
+            number: archiveNum 
+        });
+        
+        if (!archive) {
+            console.log(`❌ الأرشيف غير موجود: ${series}${archiveNum}`);
+            const availableArchives = await this.getAvailableArchives(series);
+            return `❌ الأرشيف ${series}${archiveNum} غير موجود\n\n📂 الأرشيفات المتاحة في سلسلة ${series}:\n${availableArchives}`;
+        }
+        
+        console.log(`✅ تم العثور على الأرشيف: ${archive.name}`);
+        
+        // بناء نص الأرشيف كاملاً بالشكل المطلوب
+        let archiveText = `الارشيف ${series}${archiveNum} 🗂️\n\n`;
+        
+        // إضافة كل حساب في الأرشيف بالتنسيق المطلوب
+        archive.accounts.forEach((account, index) => {
+            const accountNumber = index + 1;
+            
+            // تنسيق الرصيد كما في المثال (مع مسافات للأرقام الكبيرة)
+            let formattedBalance = account.balance.toString();
+            if (account.balance >= 1000) {
+                // إضافة مسافة للألوف كما في المثال: "31 791" بدلاً من "31,791"
+                formattedBalance = account.balance.toLocaleString().replace(/,/g, ' ');
+            }
+            
+            // تنسيق النص تماماً كما في المثال المطلوب
+            archiveText += `${accountNumber} _${account.code} ${account.username}\n${formattedBalance} G\n\n`;
+        });
+        
+        return archiveText;
+        
     } catch (error) {
-      console.error('❌ خطأ في عرض الأرشيف:', error);
-      return `❌ حدث خطأ في عرض الأرشيف ${series}${archiveNum}: ${error.message}`;
+        console.error('❌ خطأ في عرض الأرشيف:', error);
+        return `❌ حدث خطأ في عرض الأرشيف ${series}${archiveNum}: ${error.message}`;
     }
   }
-
+  
   async handleDeduct(userId, command) {
     if (!this.isAdmin(userId)) {
       return `❌ هذا الأمر للمشرفين فقط`;
