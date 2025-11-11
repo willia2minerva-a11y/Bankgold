@@ -11,7 +11,6 @@ class Archive {
     this.accounts = accounts;
   }
 
-  // دالة ثابتة للحصول على الأرشيف بناءً على السلسلة والرقم
   static async findOne({ series, number }) {
     try {
       const archiveDir = path.join(__dirname, '..', 'archives', `archive${series}`);
@@ -24,10 +23,8 @@ class Archive {
         return null;
       }
 
-      // حذف الكاش لضمان تحميل أحدث نسخة
       delete require.cache[require.resolve(archivePath)];
       
-      // استيراد ملف الأرشيف
       const archiveData = require(archivePath);
       
       console.log(`✅ تم تحميل الأرشيف: ${archiveData.name} - ${archiveData.accounts.length} حساب`);
@@ -46,7 +43,6 @@ class Archive {
     }
   }
 
-  // دالة ثابتة للحصول على جميع الأرشيفات في سلسلة معينة
   static async find({ series }) {
     try {
       const archiveDir = path.join(__dirname, '..', 'archives', `archive${series}`);
@@ -65,7 +61,6 @@ class Archive {
           if (!isNaN(number)) {
             const archivePath = path.join(archiveDir, file);
             try {
-              // حذف الكاش
               delete require.cache[require.resolve(archivePath)];
               const archiveData = require(archivePath);
               
@@ -84,7 +79,6 @@ class Archive {
         }
       }
       
-      // ترتيب الأرشيفات حسب الرقم
       return archives.sort((a, b) => a.number - b.number);
     } catch (error) {
       console.error('❌ خطأ في البحث عن الأرشيفات:', error);
@@ -92,7 +86,6 @@ class Archive {
     }
   }
 
-  // دالة للحصول على الأرشيفات المتاحة (للعرض في الرسائل)
   static async getAvailableArchives(series) {
     try {
       const archives = await this.find({ series });
