@@ -16,18 +16,12 @@ class Archive {
       const archiveDir = path.join(__dirname, '..', 'archives', `archive${series}`);
       const archivePath = path.join(archiveDir, `${series}${number}.js`);
       
-      console.log(`🔍 محاولة تحميل الأرشيف من: ${archivePath}`);
-      
       if (!fs.existsSync(archivePath)) {
-        console.log(`❌ ملف الأرشيف غير موجود: ${archivePath}`);
         return null;
       }
 
       delete require.cache[require.resolve(archivePath)];
-      
       const archiveData = require(archivePath);
-      
-      console.log(`✅ تم تحميل الأرشيف: ${archiveData.name} - ${archiveData.accounts.length} حساب`);
       
       return new Archive(
         series,
@@ -48,7 +42,6 @@ class Archive {
       const archiveDir = path.join(__dirname, '..', 'archives', `archive${series}`);
       
       if (!fs.existsSync(archiveDir)) {
-        console.log(`❌ مجلد السلسلة غير موجود: ${archiveDir}`);
         return [];
       }
       
@@ -95,10 +88,9 @@ class Archive {
       }
       
       return archives.map(arch => 
-        `• ${arch.series}${arch.number}: ${arch.name} (${arch.start} - ${arch.end}) - ${arch.accounts.length} حساب`
+        `• ${arch.series}${arch.number}: ${arch.name}`
       ).join('\n');
     } catch (error) {
-      console.error('❌ خطأ في ج الأرشيفات المتاحة:', error);
       return "❌ خطأ في تحميل الأرشيفات";
     }
   }
