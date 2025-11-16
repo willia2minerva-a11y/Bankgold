@@ -897,7 +897,7 @@ class BankSystem {
       else if (command.startsWith('تسجيل')) {
         return await this.handleLogin(userId, command);
       }
-      else if (command.startsWith('رصيدي') {
+      else if (command.startsWith('رصيدي')) {
         return await this.handleMyBalance(userId);
       }
       else if (command.startsWith('تواصل')) {
