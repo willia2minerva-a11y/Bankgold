@@ -78,8 +78,11 @@ class BankSystem {
 
   async activateArchiveAccount(account, userId = null, password = null) {
     try {
+      console.log(`🔧 محاولة تفعيل حساب الأرشيف: ${account.code}`);
+      
       const dbAccount = await this.db.getAccountByCode(account.code);
       if (!dbAccount) {
+        console.log(`🆕 إنشاء حساب جديد من الأرشيف: ${account.code}`);
         const passwordHash = password ? hashPassword(password) : hashPassword('default123');
         const success = await this.db.createAccount(
           userId || config.adminUserId,
@@ -91,13 +94,40 @@ class BankSystem {
         
         if (success) {
           console.log(`✅ تم تفعيل الحساب من الأرشيف: ${account.code}`);
+          // تحديث الذاكرة المؤقتة
+          await this.refreshAccountCache(account.code);
           return true;
+        } else {
+          console.error(`❌ فشل في إنشاء الحساب: ${account.code}`);
+          return false;
         }
+      } else {
+        console.log(`🔄 الحساب موجود بالفعل، تحديث البيانات: ${account.code}`);
+        // تحديث البيانات إذا كان الحساب موجوداً
+        await this.db.updateBalance(dbAccount.user_id, account.balance);
+        await this.refreshAccountCache(account.code);
+        return true;
       }
-      return true;
     } catch (error) {
       console.error('❌ خطأ في تفعيل حساب الأرشيف:', error);
       return false;
+    }
+  }
+
+  async refreshAccountCache(code) {
+    try {
+      const dbAccount = await this.db.getAccountByCode(code);
+      if (dbAccount) {
+        this.allAccounts.set(code, {
+          ...dbAccount,
+          source: 'database',
+          status: dbAccount.status || 'active',
+          user_id: dbAccount.user_id
+        });
+        console.log(`🔄 تم تحديث الذاكرة المؤقتة للحساب: ${code}`);
+      }
+    } catch (error) {
+      console.error('❌ خطأ في تحديث الذاكرة المؤقتة:', error);
     }
   }
 
@@ -203,8 +233,17 @@ class BankSystem {
         }
       }
       
+      // الحصول على الحساب المحدث
+      const updatedAccount = await this.findAccount(code);
+      if (!updatedAccount || !updatedAccount.user_id) {
+        return [false, "❌ لا يمكن العثور على معرف المستخدم للحساب"];
+      }
+      
       console.log(`💾 تحديث الرصيد في قاعدة البيانات: ${code}`);
-      await this.db.updateBalance(account.user_id, newBalance);
+      await this.db.updateBalance(updatedAccount.user_id, newBalance);
+      
+      // تحديث الذاكرة المؤقتة
+      await this.refreshAccountCache(code);
       
       return [true, `✅ تم التعديل بنجاح!\nالحساب: ${code}\nالرصيد الجديد: ${newBalance} ${config.currency}`];
     } catch (error) {
@@ -231,8 +270,17 @@ class BankSystem {
         }
       }
       
-      console.log(`🔒 حظر الحساب في قاعدة البيانات: ${code}`);
-      await this.db.updateAccountStatus(account.user_id, 'banned');
+      // الحصول على الحساب المحدث
+      const updatedAccount = await this.findAccount(code);
+      if (!updatedAccount || !updatedAccount.user_id) {
+        return [false, "❌ لا يمكن العثور على معرف المستخدم للحساب"];
+      }
+      
+      console.log(`🔒 حظر الحساب في قاعدة البيانات: ${code} - المستخدم: ${updatedAccount.user_id}`);
+      await this.db.updateAccountStatus(updatedAccount.user_id, 'banned');
+      
+      // تحديث الذاكرة المؤقتة
+      await this.refreshAccountCache(code);
       
       return [true, `✅ تم حظر الحساب ${code}`];
     } catch (error) {
@@ -255,12 +303,21 @@ class BankSystem {
       }
       
       console.log(`🔧 تفعيل وربط حساب الأرشيف: ${code}`);
+      
+      // تفعيل الحساب أولاً مع الربط بالمستخدم الجديد
       const activated = await this.activateArchiveAccount(account, targetUserId, password);
       if (!activated) {
         return [false, "❌ فشل في تفعيل الحساب من الأرشيف للربط"];
       }
       
-      return [true, `✅ تم ربط الحساب بنجاح!\nالكود: ${code}\nالمعرف: ${targetUserId}\nكلمة السر: ${password}`];
+      // تأكيد أن الحساب مفعل ومربوط
+      const updatedAccount = await this.db.getAccountByCode(code);
+      if (updatedAccount && updatedAccount.user_id === targetUserId) {
+        await this.refreshAccountCache(code);
+        return [true, `✅ تم ربط الحساب بنجاح!\nالكود: ${code}\nالمعرف: ${targetUserId}\nكلمة السر: ${password}`];
+      } else {
+        return [false, "❌ فشل في تأكيد الربط - حاول مرة أخرى"];
+      }
     } catch (error) {
       console.error('❌ خطأ في الربط:', error);
       return [false, `❌ فشل في ربط الحساب - حاول مرة أخرى`];
@@ -288,8 +345,17 @@ class BankSystem {
         }
       }
       
-      console.log(`💾 إضافة الرصيد في قاعدة البيانات: ${code}`);
-      await this.db.updateBalance(account.user_id, newBalance);
+      // الحصول على الحساب المحدث
+      const updatedAccount = await this.findAccount(code);
+      if (!updatedAccount || !updatedAccount.user_id) {
+        return [false, "❌ لا يمكن العثور على معرف المستخدم للحساب"];
+      }
+      
+      console.log(`💾 إضافة الرصيد في قاعدة البيانات: ${code} -> ${newBalance}`);
+      await this.db.updateBalance(updatedAccount.user_id, newBalance);
+      
+      // تحديث الذاكرة المؤقتة
+      await this.refreshAccountCache(code);
       
       return [true, `✅ تم الإضافة بنجاح!\nالحساب: ${code}\nالمبلغ: +${amount} ${config.currency}\nالرصيد الجديد: ${newBalance} ${config.currency}`];
     } catch (error) {
@@ -323,8 +389,17 @@ class BankSystem {
         }
       }
       
+      // الحصول على الحساب المحدث
+      const updatedAccount = await this.findAccount(code);
+      if (!updatedAccount || !updatedAccount.user_id) {
+        return [false, "❌ لا يمكن العثور على معرف المستخدم للحساب"];
+      }
+      
       console.log(`💾 خصم الرصيد في قاعدة البيانات: ${code}`);
-      await this.db.updateBalance(account.user_id, newBalance);
+      await this.db.updateBalance(updatedAccount.user_id, newBalance);
+      
+      // تحديث الذاكرة المؤقتة
+      await this.refreshAccountCache(code);
       
       return [true, `✅ تم الخصم بنجاح!\nالحساب: ${code}\nالمبلغ: ${amount} ${config.currency}\nالرصيد الجديد: ${newBalance} ${config.currency}`];
     } catch (error) {
@@ -711,7 +786,25 @@ class BankSystem {
         return [false, "❌ الحساب غير موجود"];
       }
       
-      await this.db.updateAccountStatus(account.user_id, 'active');
+      // إذا كان الحساب من الأرشيف، نفعله أولاً
+      if (account.source === 'archive') {
+        console.log(`🔧 تفعيل حساب الأرشيف لفك الحظر: ${code}`);
+        const activated = await this.activateArchiveAccount(account);
+        if (!activated) {
+          return [false, "❌ فشل في تفعيل الحساب من الأرشيف"];
+        }
+      }
+      
+      // الحصول على الحساب المحدث
+      const updatedAccount = await this.findAccount(code);
+      if (!updatedAccount || !updatedAccount.user_id) {
+        return [false, "❌ لا يمكن العثور على معرف المستخدم للحساب"];
+      }
+      
+      await this.db.updateAccountStatus(updatedAccount.user_id, 'active');
+      
+      // تحديث الذاكرة المؤقتة
+      await this.refreshAccountCache(code);
       
       return [true, `✅ تم فك حظر الحساب ${code}`];
     } catch (error) {
@@ -827,7 +920,14 @@ class BankSystem {
       }
       
       const passwordHash = hashPassword(newPassword);
-      await this.db.updateAccountPassword(account.user_id || userAccount.user_id, passwordHash);
+      
+      // الحصول على الحساب المحدث
+      const updatedAccount = await this.findAccount(code);
+      if (!updatedAccount || !updatedAccount.user_id) {
+        return `❌ لا يمكن العثور على معرف المستخدم للحساب`;
+      }
+      
+      await this.db.updateAccountPassword(updatedAccount.user_id, passwordHash);
       
       return `✅ تم تعديل كلمة السر بنجاح!\nالحساب: ${code}\nكلمة السر الجديدة: ${newPassword}`;
     } catch (error) {
@@ -877,7 +977,13 @@ class BankSystem {
         await this.activateArchiveAccount(toAccount);
       }
       
-      await this.db.transferMoney(fromUser, toAccount.user_id, toCode, amount);
+      // الحصول على الحساب المحدث
+      const updatedToAccount = await this.findAccount(toCode);
+      if (!updatedToAccount || !updatedToAccount.user_id) {
+        return [false, "❌ لا يمكن العثور على معرف المستخدم للحساب المستلم"];
+      }
+      
+      await this.db.transferMoney(fromUser, updatedToAccount.user_id, toCode, amount);
       const newBalance = fromAccount.balance - amount;
       
       return [true, `✅ تم التحويل بنجاح!\nالمبلغ: ${amount} ${config.currency}\nإلى: ${toCode}\nرصيدك الجديد: ${newBalance} ${config.currency}`];
