@@ -1,5 +1,6 @@
 const Database = require('./database-mongodb');
 const config = require('./config');
+const { hashPassword } = require('./utils/security');
 
 class DataImporter {
   constructor() {
@@ -27,6 +28,7 @@ class DataImporter {
           null,
           account.code,
           account.username,
+          null, // كلمة المرور (سيتم استخدام الافتراضية)
           account.balance
         );
       } catch (error) {
@@ -47,6 +49,7 @@ class DataImporter {
           null,
           account.code,
           account.username,
+          null, // كلمة المرور (سيتم استخدام الافتراضية)
           account.balance
         );
       } catch (error) {
