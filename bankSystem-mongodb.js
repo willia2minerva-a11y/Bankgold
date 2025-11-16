@@ -369,19 +369,19 @@ class BankSystem {
       if (command.startsWith('تحويل')) {
         return await this.handleTransfer(userId, command);
       }
-      else if (command === 'معرفي')) {
+      else if (command === 'معرفي') {
         return await this.handleGetId(userId);
       }
-      else if (command === 'رصيدي')) {
+      else if (command === 'رصيدي') {
         return await this.handleMyBalance(userId);
       }
-      else if (command === 'حالتي')) {
+      else if (command === 'حالتي') {
         return await this.handleMyAccount(userId);
       }
-      else if (command === 'مساعدة' || command === 'اوامر')) {
+      else if (command === 'مساعدة' || command === 'اوامر') {
         return await this.handleHelp(userId);
       }
-      else if (command === 'تسجيل خروج')) {
+      else if (command === 'تسجيل خروج') {
         return await this.handleLogout(userId);
       }
       else if (command.startsWith('تعديل كلمة السر')) {
